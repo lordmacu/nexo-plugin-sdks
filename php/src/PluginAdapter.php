@@ -3,30 +3,27 @@
 declare(strict_types=1);
 
 /**
- * Phase 31.5.c — child-side dispatch loop for PHP subprocess
- * plugins.
+ * Child-side dispatch loop for PHP subprocess plugins.
  *
  * Mirrors the Rust counterpart in
- * `crates/microapp-sdk/src/plugin.rs::PluginAdapter`, the Python
- * counterpart in
- * `extensions/sdk-python/nexo_plugin_sdk/adapter.py`, and the
- * TypeScript counterpart in
- * `extensions/sdk-typescript/src/adapter.ts`.
- *
- * Reads JSON-RPC 2.0 newline-delimited frames from stdin via
- * non-blocking polls + `stream_select`, dispatches:
+ * `crates/microapp-sdk/src/plugin.rs::PluginAdapter` (and the Python /
+ * TypeScript SDKs). Reads JSON-RPC 2.0 newline-delimited frames from
+ * stdin via non-blocking polls + `stream_select`, dispatches:
  *
  * - `method == "initialize"` (request) → reply with manifest +
  *   server_version.
- * - `method == "broker.event"` (notification) → spawn a Fiber
- *   running `onEvent` so the reader continues polling stdin
- *   while the handler awaits its own broker round-trips.
- * - `method == "shutdown"` (request) → drain in-flight Fibers,
- *   reply `{ok: true}`, exit the loop.
- * - Anything else with an id → reply error `-32601 method not
- *   found`.
- * - Anything else without an id (notification) → silently
- *   ignore (JSON-RPC 2.0 §4.1).
+ * - `method == "broker.event"` (notification) → spawn a Fiber running
+ *   `onEvent` so the reader keeps polling stdin while the handler awaits
+ *   its own broker / host round-trips.
+ * - `method == "shutdown"` (request) → abandon in-flight host calls,
+ *   drain in-flight Fibers, reply `{ok: true}`, exit.
+ * - `method == "llm.complete.delta"` (notification) → route the chunk to
+ *   the awaiting `llmCompleteStream` call.
+ * - a frame with an `id` and no `method` → a *response* to a child→host
+ *   request we issued (`memory.recall` / `llm.complete`) → fill its
+ *   pending entry; unknown id → dropped with a warn.
+ * - anything else with an `id` → reply `-32601 method not found`.
+ * - anything else without an `id` → silently ignored (JSON-RPC §4.1).
  */
 
 namespace Nexo\Plugin\Sdk;
@@ -47,6 +44,7 @@ final class PluginAdapter
     private bool $stopped = false;
     private string $stdinBuffer = '';
     private Scheduler $scheduler;
+    private PendingRegistry $pending;
     private BrokerSender $broker;
 
     /**
@@ -82,20 +80,17 @@ final class PluginAdapter
         }
 
         $this->scheduler = new Scheduler();
-        $this->broker = new BrokerSender();
+        $this->pending = new PendingRegistry();
+        $this->broker = new BrokerSender($this->pending);
     }
 
-    /**
-     * @return array<string, mixed>
-     */
+    /** @return array<string, mixed> */
     public function manifest(): array
     {
         return $this->manifest;
     }
 
-    /**
-     * Single-shot. Throws PluginError if called twice.
-     */
+    /** Single-shot. Throws PluginError if called twice. */
     public function run(): void
     {
         if ($this->started) {
@@ -121,10 +116,8 @@ final class PluginAdapter
         try {
             while (!$this->stopped) {
                 $line = $this->readLineNonBlocking();
-                if ($line !== null) {
-                    if ($line !== '') {
-                        $this->handleLine($line);
-                    }
+                if ($line !== null && $line !== '') {
+                    $this->handleLine($line);
                 }
                 if (feof(STDIN) && $this->stdinBuffer === '') {
                     break;
@@ -133,14 +126,18 @@ final class PluginAdapter
                 usleep(1_000);
             }
         } finally {
+            // Abandon outstanding host calls (host is gone) so handler
+            // Fibers stuck waiting for a reply get RpcTransportError and
+            // terminate — otherwise drain() would spin forever.
+            $this->pending->abandonAll();
             $this->scheduler->drain();
         }
     }
 
     /**
-     * Pull complete lines from stdin (non-blocking). Returns the
-     * next complete line if one is available, '' if the buffer
-     * has data but no newline yet, or null if no input is ready.
+     * Pull complete lines from stdin (non-blocking). Returns the next
+     * complete line if one is available, '' if the buffer has data but
+     * no newline yet, or null if no input is ready.
      */
     private function readLineNonBlocking(): ?string
     {
@@ -149,26 +146,11 @@ final class PluginAdapter
         $except = null;
         $count = @stream_select($read, $write, $except, 0, 0);
         if ($count === false || $count === 0) {
-            // No input ready right now — but check buffer in case
-            // a leftover line is already complete.
-            $idx = strpos($this->stdinBuffer, "\n");
-            if ($idx === false) {
-                return null;
-            }
-            $line = substr($this->stdinBuffer, 0, $idx);
-            $this->stdinBuffer = substr($this->stdinBuffer, $idx + 1);
-            return $line;
+            return $this->popBufferedLine();
         }
         $chunk = fread(STDIN, 65536);
         if ($chunk === false || $chunk === '') {
-            // Either EOF or transient. Check buffer.
-            $idx = strpos($this->stdinBuffer, "\n");
-            if ($idx === false) {
-                return null;
-            }
-            $line = substr($this->stdinBuffer, 0, $idx);
-            $this->stdinBuffer = substr($this->stdinBuffer, $idx + 1);
-            return $line;
+            return $this->popBufferedLine();
         }
         $this->stdinBuffer .= $chunk;
         $idx = strpos($this->stdinBuffer, "\n");
@@ -180,14 +162,22 @@ final class PluginAdapter
         return $line;
     }
 
+    private function popBufferedLine(): ?string
+    {
+        $idx = strpos($this->stdinBuffer, "\n");
+        if ($idx === false) {
+            return null;
+        }
+        $line = substr($this->stdinBuffer, 0, $idx);
+        $this->stdinBuffer = substr($this->stdinBuffer, $idx + 1);
+        return $line;
+    }
+
     private function handleLine(string $line): void
     {
         $byteLen = strlen($line);
         if ($byteLen > $this->maxFrameBytes) {
-            fwrite(
-                STDERR,
-                "plugin: inbound frame $byteLen bytes exceeds maxFrameBytes {$this->maxFrameBytes}\n",
-            );
+            fwrite(STDERR, "plugin: inbound frame $byteLen bytes exceeds maxFrameBytes {$this->maxFrameBytes}\n");
             return;
         }
         try {
@@ -202,7 +192,16 @@ final class PluginAdapter
         }
         $method = $msg['method'] ?? null;
         $id = $msg['id'] ?? null;
+
         if (!is_string($method)) {
+            // A response (id + result/error) to a request we issued, or
+            // garbage. Never reply to it.
+            if (is_int($id) && $this->pending->has($id)) {
+                $err = (isset($msg['error']) && is_array($msg['error'])) ? $msg['error'] : null;
+                $this->pending->resolveResponse($id, $msg['result'] ?? null, $err);
+            } elseif ($id !== null) {
+                fwrite(STDERR, 'plugin: response for unknown/expired request id ' . json_encode($id) . ", dropped\n");
+            }
             return;
         }
 
@@ -210,14 +209,26 @@ final class PluginAdapter
             $this->replyInitialize($id);
         } elseif ($method === 'broker.event') {
             $this->dispatchEvent($msg['params'] ?? null);
+        } elseif ($method === 'llm.complete.delta') {
+            $this->routeDelta($msg['params'] ?? null);
         } elseif ($method === 'shutdown') {
             $this->replyShutdown($id);
             $this->stopped = true;
         } elseif ($id !== null) {
             $this->writeFrame(Wire::buildErrorResponse($id, -32601, 'method not found'));
         }
-        // Unknown notification (no id) — silently ignore per
-        // JSON-RPC §4.1.
+        // Unknown notification (no id) — silently ignore per JSON-RPC §4.1.
+    }
+
+    private function routeDelta(mixed $params): void
+    {
+        $p = is_array($params) ? $params : [];
+        $rid = $p['request_id'] ?? null;
+        $chunk = $p['chunk'] ?? null;
+        if (is_int($rid) && is_string($chunk) && $this->pending->appendChunk($rid, $chunk)) {
+            return;
+        }
+        fwrite(STDERR, 'plugin: llm.complete.delta for unknown/non-stream request ' . json_encode($rid) . ", dropped\n");
     }
 
     private function replyInitialize(int|string|null $id): void
@@ -233,6 +244,7 @@ final class PluginAdapter
 
     private function replyShutdown(int|string|null $id): void
     {
+        $this->pending->abandonAll();
         $this->scheduler->drain();
         if ($this->onShutdown !== null) {
             try {
@@ -281,9 +293,7 @@ final class PluginAdapter
         });
     }
 
-    /**
-     * @param array<string, mixed> $frame
-     */
+    /** @param array<string, mixed> $frame */
     private function writeFrame(array $frame): void
     {
         fwrite(STDOUT, Wire::serializeFrame($frame));

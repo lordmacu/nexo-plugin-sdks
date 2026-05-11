@@ -51,6 +51,40 @@ $adapter = new PluginAdapter([
 $adapter->run();
 ```
 
+## Host calls
+
+The `$broker` handle passed into `onEvent` can call back into the host —
+read the agent's long-term memory, or run an LLM completion via the
+agent's configured providers:
+
+```php
+'onEvent' => function (string $topic, Event $event, BrokerSender $broker): void {
+    $entries = $broker->memoryRecall(['agentId' => 'my_agent', 'query' => 'user prefers concise answers', 'limit' => 5]);
+    // $entries: MemoryEntry[]  (id, agentId, content, tags, conceptTags, createdAt, memoryType)
+
+    $r = $broker->llmComplete([
+        'provider' => 'minimax', 'model' => 'minimax-m2.5',
+        'messages' => [['role' => 'user', 'content' => 'summarize: ...']],
+        'systemPrompt' => 'You answer concisely.',
+    ]);
+    // $r->content, $r->finishReason, $r->usage->{promptTokens, completionTokens}
+
+    $final = $broker->llmCompleteStream(
+        ['provider' => 'minimax', 'model' => 'minimax-m2.5', 'messages' => [['role' => 'user', 'content' => '...']]],
+        function (string $chunk): void { /* called once per chunk, in order */ },
+    );
+    // $final is the LlmCompleteResult; $final->content is null (the chunks were the content)
+},
+```
+
+Failures throw an `RpcError`: `RpcServerError` (`getCode()` — `-32603` =
+backend/not-configured, `-32602` = bad params, `-32601` = not wired
+host-side; `$serverMessage` = the host's raw message), `RpcTimeoutError`
+(`$seconds`; default 30 s, override per call with `'timeoutSec' => ...`),
+`RpcTransportError`, `RpcDecodeError`. Host calls run inside the handler
+Fiber and `Fiber::suspend()` until the reply lands, so N concurrent
+`onEvent` handlers can each have a call in flight.
+
 ## Robustness defaults
 
 The constructor defaults are picked to make the most common
@@ -82,6 +116,7 @@ behavior.
 | `initialize` | host → child | `{ manifest, server_version }` automatically — the SDK reads + caches your manifest TOML at construction time. |
 | `broker.event` (notification) | host → child | No JSON reply. Your `onEvent` handler runs in a Fiber so the dispatch loop continues reading stdin while the handler awaits broker round-trips. Author code can call `Fiber::suspend()` at await points to yield control. |
 | `shutdown` | host → child | `{ ok: true }` after draining in-flight Fibers + invoking your `onShutdown` (if set). |
+| `memory.recall` / `llm.complete` (+ `llm.complete.delta`) | child → host | Issued by `$broker->memoryRecall` / `llmComplete` / `llmCompleteStream` — the SDK assigns the request id, Fiber-suspends until the reply lands, and multiplexes concurrent calls. |
 
 Full spec: [`nexo-plugin-contract.md`](https://github.com/lordmacu/nexo-rs/blob/main/nexo-plugin-contract.md).
 
@@ -93,13 +128,16 @@ composer install
 php tests/run-all.php
 ```
 
-14 test cases across 7 files covering:
-- Handshake: initialize reply, unknown method `-32601`,
-  unknown notification silently ignored.
-- Manifest validation: missing id, invalid TOML, id regex
-  violation.
-- Dispatch: handler invocation, non-blocking reader, in-flight
-  Fiber drain on shutdown.
+23 test cases across 8 files covering:
+- Handshake: initialize reply, unknown method `-32601`, unknown
+  notification silently ignored.
+- Manifest validation: missing id, invalid TOML, id regex violation.
+- Dispatch: handler invocation, non-blocking reader, in-flight Fiber
+  drain on shutdown.
+- Host calls: `memory.recall` / `llm.complete` happy paths, streaming,
+  `-32603` → `RpcServerError`, per-call timeout → `RpcTimeoutError`,
+  out-of-order multiplexing, shutdown-while-in-flight, unknown-response-id
+  dropped, `fromJson` round-trips.
 - Stdout guard: idempotent install, echo diverted to stderr.
 - Wire: oversized frame rejected with continued dispatch.
 - Lifecycle: double `run()` rejects with PluginError.
@@ -107,13 +145,17 @@ php tests/run-all.php
 
 ## Phase tracking
 
-- 31.5.c (shipped, this package) — child-side SDK + 14 tests +
-  default-on stdout guard + Fiber-based scheduler.
+- 31.5.c (shipped) — child-side SDK + 14 tests + default-on stdout
+  guard + Fiber-based scheduler.
+- 31.8 (shipped) — extracted to the
+  [`nexo-plugin-sdks`](https://github.com/lordmacu/nexo-plugin-sdks)
+  mono-repo (`php/` subdir, mirrored to
+  [`nexo-plugin-sdk-php`](https://github.com/lordmacu/nexo-plugin-sdk-php)
+  for Packagist) and published as `nexo/plugin-sdk`.
+- 31.9 (shipped, 0.2.0) — child→host call surface: `$broker->memoryRecall`
+  / `$broker->llmComplete` / `$broker->llmCompleteStream`, the `RpcError`
+  hierarchy, Fiber-driven request multiplexing. Parity with the Rust
+  child SDK. 23 tests.
 - 31.5.c.b (deferred) — per-target PHP tarballs
-  (`<id>-<version>-php83-x86_64-linux.tar.gz` etc.) for
-  plugins that need native PHP extensions.
-- Packagist publish deferred — once the API stabilizes after
-  cross-language usage settles, this package ships to
-  Packagist as `nexo/plugin-sdk`. Until then plugin authors
-  vendor it via the path repository convention shown in the
-  template's `composer.json`.
+  (`<id>-<version>-php83-x86_64-linux.tar.gz` etc.) for plugins that need
+  native PHP extensions.
