@@ -11,7 +11,7 @@ write a plugin in your language of choice without cloning the agent framework.
 
 | Language | Directory | Package | Install |
 |----------|-----------|---------|---------|
-| Python ≥ 3.10 | [`python/`](./python) | [`nexo-plugin-sdk`](https://pypi.org/project/nexo-plugin-sdk/) (PyPI) | `pip install nexo-plugin-sdk` |
+| Python ≥ 3.10 | [`python/`](./python) | [`nexoai`](https://pypi.org/project/nexoai/) (PyPI) — import name `nexo_plugin_sdk` | `pip install nexoai` |
 | TypeScript / JS (Node ≥ 18) | [`typescript/`](./typescript) | [`nexo-plugin-sdk`](https://www.npmjs.com/package/nexo-plugin-sdk) (npm) | `npm install nexo-plugin-sdk` |
 | PHP ≥ 8.1 | [`php/`](./php) | [`nexo/plugin-sdk`](https://packagist.org/packages/nexo/plugin-sdk) (Packagist) | `composer require nexo/plugin-sdk` |
 

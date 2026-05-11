@@ -1,4 +1,4 @@
-# nexo-plugin-sdk (Python)
+# nexoai — nexo plugin SDK (Python)
 
 Child-side SDK for nexo subprocess plugins written in Python 3.10+.
 Mirrors the Rust counterpart in
@@ -7,6 +7,14 @@ counterpart in [`typescript/`](../typescript) and
 the PHP counterpart in [`php/`](../php) — same wire
 format ([`nexo-plugin-contract.md`](https://github.com/lordmacu/nexo-rs/blob/main/nexo-plugin-contract.md)),
 different language.
+
+```bash
+pip install nexoai
+```
+
+> **Distribution name vs import name** — the PyPI package is `nexoai`
+> (the `nexo-plugin-sdk` name was already taken); the importable module is
+> `nexo_plugin_sdk` (`from nexo_plugin_sdk import PluginAdapter`).
 
 The reference plugin template lives at
 [the Python plugin template](https://github.com/lordmacu/nexo-rs/tree/main/extensions/template-plugin-python) (or run `nexo plugin new --lang python`);
@@ -121,6 +129,7 @@ SIGTERM drains an in-flight handler before exiting).
   regex validation, 21 tests, `pyproject.toml` publish-ready.
 - 31.4.b (deferred) — per-target Python tarballs (`pyXY-<triple>`
   targets) for plugins that need native extensions.
-- PyPI publish deferred — ships to PyPI as `nexo-plugin-sdk` once the
-  scripting SDKs are split into their own repo. Until then plugin
-  authors vendor it via `pack-tarball-python.sh`.
+- 31.8 (shipped) — extracted to the
+  [`nexo-plugin-sdks`](https://github.com/lordmacu/nexo-plugin-sdks)
+  mono-repo and published to PyPI as `nexoai` (the `nexo-plugin-sdk`
+  name was taken). Tagged `python-vX.Y.Z`.

@@ -1,6 +1,7 @@
-# Changelog — `nexo-plugin-sdk` (Python)
+# Changelog — `nexoai` (Python plugin SDK)
 
-All notable changes to the Python plugin SDK. The format roughly follows
+All notable changes to the Python plugin SDK (PyPI distribution name
+`nexoai`; importable module `nexo_plugin_sdk`). The format roughly follows
 [Keep a Changelog](https://keepachangelog.com/); versions are tagged
 `python-vX.Y.Z` in the [nexo-plugin-sdks](https://github.com/lordmacu/nexo-plugin-sdks)
 mono-repo.
