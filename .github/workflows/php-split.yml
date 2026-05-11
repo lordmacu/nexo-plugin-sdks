@@ -1,49 +1,42 @@
 name: php-split
 
 # Mirrors php/ (read-only) to lordmacu/nexo-plugin-sdk-php so Packagist has a
-# repo with composer.json at the root. Don't touch the mirror — it's
-# regenerated on every push to main and on every `php-v*` tag.
+# repo with composer.json at the root. Runs on `php-v*` release tags (and on
+# demand). Don't touch the mirror — it is regenerated here.
 #
 # Requires a repo secret SPLIT_TOKEN: a PAT (or fine-grained token) with
 # `contents: write` on lordmacu/nexo-plugin-sdk-php.
 
 on:
   push:
-    branches: [main]
-    paths:
-      - 'php/**'
     tags:
       - 'php-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag to create on the mirror (e.g. 0.1.0). Leave blank to mirror main only.'
+        required: false
+        default: ''
 
 jobs:
-  split-branch:
-    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  split:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: symplify/monorepo-split-github-action@v2.3.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.SPLIT_TOKEN }}
-        with:
-          package_directory: 'php'
-          repository_organization: 'lordmacu'
-          repository_name: 'nexo-plugin-sdk-php'
-          user_name: 'github-actions[bot]'
-          user_email: 'github-actions[bot]@users.noreply.github.com'
-          branch: 'main'
 
-  split-tag:
-    if: ${{ startsWith(github.ref, 'refs/tags/php-v') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - id: ver
-        run: echo "tag=${GITHUB_REF_NAME#php-v}" >> "$GITHUB_OUTPUT"
-      - uses: symplify/monorepo-split-github-action@v2.3.0
+      - name: Resolve mirror tag
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${GITHUB_REF_NAME#php-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mirror php/ -> nexo-plugin-sdk-php (main + tag)
+        uses: symplify/monorepo-split-github-action@v2.3.0
         env:
           GITHUB_TOKEN: ${{ secrets.SPLIT_TOKEN }}
         with:
