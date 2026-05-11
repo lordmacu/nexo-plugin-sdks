@@ -77,4 +77,4 @@ export type {
   JsonRpcFrame,
 } from "./wire.js";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";

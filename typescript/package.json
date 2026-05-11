@@ -1,6 +1,6 @@
 {
   "name": "nexo-plugin-sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TypeScript SDK for nexo subprocess plugins",
   "keywords": ["nexo", "plugin", "json-rpc", "agent", "subprocess"],
   "type": "module",
