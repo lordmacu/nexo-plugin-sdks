@@ -26,6 +26,13 @@ final class Wire
     public const MAX_FRAME_BYTES = 1048576; // 1 MiB
 
     /**
+     * Seconds to wait for a host reply to a child→host request before
+     * failing with `RpcTimeoutError`. Matches the Rust SDK's
+     * `DEFAULT_RPC_TIMEOUT` (30 s). Overridable per call.
+     */
+    public const DEFAULT_RPC_TIMEOUT = 30.0;
+
+    /**
      * Build a typed response.
      *
      * @param array<string, mixed> $result

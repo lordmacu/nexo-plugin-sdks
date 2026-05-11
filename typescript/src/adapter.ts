@@ -1,35 +1,41 @@
 /**
- * Phase 31.5 — child-side dispatch loop.
+ * Child-side dispatch loop.
  *
  * Mirrors the Rust counterpart in
- * `crates/microapp-sdk/src/plugin.rs::PluginAdapter` and the
- * Python counterpart in `extensions/sdk-python/nexo_plugin_sdk/adapter.py`.
- *
- * Reads JSON-RPC 2.0 newline-delimited frames from stdin, dispatches:
+ * `crates/microapp-sdk/src/plugin.rs::PluginAdapter`. Reads JSON-RPC
+ * 2.0 newline-delimited frames from stdin, dispatches:
  *
  * - `method == "initialize"` (request) → reply with manifest +
  *   server_version.
- * - `method == "broker.event"` (notification) → spawn a detached
- *   task running `onEvent` so the reader continues polling stdin
- *   while the handler awaits its own broker round-trips.
- * - `method == "shutdown"` (request) → drain in-flight tasks,
- *   reply `{ok: true}`, exit the loop.
- * - Anything else with an id → reply error `-32601 method not found`.
- * - Anything else without an id (notification) → silently ignore
- *   (JSON-RPC 2.0 §4.1).
+ * - `method == "broker.event"` (notification) → spawn a detached task
+ *   running `onEvent` so the reader keeps polling stdin while the
+ *   handler awaits its own broker / host round-trips.
+ * - `method == "shutdown"` (request) → abandon in-flight host calls,
+ *   drain in-flight handler tasks, reply `{ok: true}`, exit.
+ * - `method == "llm.complete.delta"` (notification) → route the chunk
+ *   to the awaiting `LlmStream`.
+ * - a frame with an `id` and no `method` → a *response* to a child→host
+ *   request we issued (`memory.recall` / `llm.complete`) → resolve the
+ *   awaiting promise; unknown id → dropped with a warn.
+ * - anything else with an `id` → reply `-32601 method not found`.
+ * - anything else without an `id` → silently ignored (JSON-RPC §4.1).
  */
 
 import { Buffer } from "node:buffer";
 import * as readline from "node:readline";
 
 import { BrokerSender } from "./broker.js";
-import { ManifestError, PluginError, WireError } from "./errors.js";
-import { Event } from "./events.js";
-import { parseManifest, type ParsedManifest } from "./manifest.js";
 import {
-  installStdoutGuard,
-  isStdoutGuardInstalled,
-} from "./stdout-guard.js";
+  ManifestError,
+  PluginError,
+  RpcServerError,
+  RpcTransportError,
+  WireError,
+} from "./errors.js";
+import { Event } from "./events.js";
+import { parseLlmCompleteResult, type Pending } from "./host.js";
+import { parseManifest, type ParsedManifest } from "./manifest.js";
+import { installStdoutGuard, isStdoutGuardInstalled } from "./stdout-guard.js";
 import {
   buildErrorResponse,
   buildResponse,
@@ -51,22 +57,21 @@ export interface PluginAdapterOptions {
   manifestToml: string;
   /** Returned in the initialize reply. Default `"0.1.0"`. */
   serverVersion?: string;
-  /** Invoked for every broker.event notification. Detached task —
-   * the reader does not block while the handler awaits its own
-   * broker.publish round-trips. */
+  /** Invoked for every broker.event notification. Detached task — the
+   * reader does not block while the handler awaits broker / host
+   * round-trips. */
   onEvent?: EventHandler;
   /** Awaited before `{ok: true}` reply to shutdown. */
   onShutdown?: ShutdownHandler;
-  /** Default true — patches `process.stdout.write` to divert
-   * non-JSON lines to stderr. Critical for plugin authors who
-   * accidentally `console.log`. Set false only if you have
-   * another guard layer. */
+  /** Default true — patches `process.stdout.write` to divert non-JSON
+   * lines to stderr. Critical for plugin authors who accidentally
+   * `console.log`. Set false only if you have another guard layer. */
   enableStdoutGuard?: boolean;
-  /** Default `MAX_FRAME_BYTES` (1 MiB). Reject inbound frames
-   * larger than this with a WireError; dispatch continues. */
+  /** Default `MAX_FRAME_BYTES` (1 MiB). Reject inbound frames larger
+   * than this with a WireError; dispatch continues. */
   maxFrameBytes?: number;
-  /** Default true — listen for SIGTERM + SIGINT and trigger
-   * graceful shutdown (drain in-flight, exit 0). */
+  /** Default true — listen for SIGTERM + SIGINT and trigger graceful
+   * shutdown (drain in-flight, exit 0). */
   handleProcessSignals?: boolean;
 }
 
@@ -75,6 +80,8 @@ interface JsonRpcFrameLike {
   id?: unknown;
   method?: unknown;
   params?: unknown;
+  result?: unknown;
+  error?: { code?: unknown; message?: unknown } | undefined;
 }
 
 export class PluginAdapter {
@@ -86,9 +93,14 @@ export class PluginAdapter {
   private readonly handleProcessSignals: boolean;
   private readonly inflight = new Set<Promise<void>>();
   private readonly broker: BrokerSender;
+  /** Outstanding child→host requests, keyed by SDK-assigned id; shared
+   * with the broker handle so the dispatch loop can route responses +
+   * `llm.complete.delta` chunks back to awaiting callers. */
+  private readonly pending = new Map<number, Pending>();
 
   private started = false;
   private stopped = false;
+  private nextId = 0;
   private rl: readline.Interface | null = null;
   private signalCleanup: (() => void) | null = null;
 
@@ -104,14 +116,17 @@ export class PluginAdapter {
       installStdoutGuard();
     }
 
-    this.broker = new BrokerSender((line) => {
-      // Direct stdout write through the original handle — the
-      // guard would no-op on JSON lines anyway, but skipping it
-      // saves one parse round-trip per publish. The guard remains
-      // installed for everything OTHER than the SDK's blessed
-      // path (e.g. console.log from author code).
-      process.stdout.write(line);
-    });
+    this.broker = new BrokerSender(
+      (line) => {
+        // Direct stdout write through the original handle — the guard
+        // would no-op on JSON lines anyway, but skipping it saves one
+        // parse round-trip per frame. The guard remains installed for
+        // everything OTHER than the SDK's blessed path.
+        process.stdout.write(line);
+      },
+      this.pending,
+      () => ++this.nextId,
+    );
   }
 
   get manifest(): Readonly<Record<string, unknown>> {
@@ -127,9 +142,8 @@ export class PluginAdapter {
 
     if (this.handleProcessSignals) {
       const onSig = (): void => {
-        // Closing the readline interface causes the for-await loop
-        // below to break; the surrounding code handles in-flight
-        // drain and exit.
+        // Closing the readline interface breaks the for-await loop
+        // below; the surrounding code handles drain + exit.
         this.rl?.close();
       };
       process.on("SIGTERM", onSig);
@@ -158,9 +172,9 @@ export class PluginAdapter {
       this.rl = null;
       this.signalCleanup?.();
       this.signalCleanup = null;
-      // Drain any handlers spawned mid-stream that haven't replied
-      // yet — most relevant for SIGTERM-initiated exits where
-      // shutdown was not received.
+      // Abandon any outstanding host calls (host is gone), then drain
+      // handler tasks — most relevant for SIGTERM-initiated exits.
+      this.abandonPending();
       await this.drainInflight();
     }
   }
@@ -171,10 +185,9 @@ export class PluginAdapter {
     }
     const byteLen = Buffer.byteLength(line, "utf-8");
     if (byteLen > this.maxFrameBytes) {
-      const err = new WireError(
-        `inbound frame ${byteLen} bytes exceeds maxFrameBytes ${this.maxFrameBytes}`,
+      process.stderr.write(
+        `plugin: inbound frame ${byteLen} bytes exceeds maxFrameBytes ${this.maxFrameBytes}\n`,
       );
-      process.stderr.write(`plugin: ${err.message}\n`);
       return;
     }
 
@@ -182,8 +195,7 @@ export class PluginAdapter {
     try {
       msg = JSON.parse(line);
     } catch (e) {
-      const reason = e instanceof Error ? e.message : String(e);
-      process.stderr.write(`plugin: malformed jsonrpc line: ${reason}\n`);
+      process.stderr.write(`plugin: malformed jsonrpc line: ${e instanceof Error ? e.message : String(e)}\n`);
       return;
     }
     if (typeof msg !== "object" || msg === null) {
@@ -193,8 +205,15 @@ export class PluginAdapter {
 
     const method = msg.method;
     const id = msg.id;
+
     if (typeof method !== "string") {
-      // No method → spurious response; ignore.
+      // A response (id + result/error) to a request we issued, or
+      // garbage. Never reply to it.
+      if (typeof id === "number" && this.pending.has(id)) {
+        this.routeResponse(id, msg);
+      } else if (id !== undefined && id !== null) {
+        process.stderr.write(`plugin: response for unknown/expired request id ${JSON.stringify(id)}, dropped\n`);
+      }
       return;
     }
 
@@ -202,6 +221,8 @@ export class PluginAdapter {
       this.replyInitialize(id);
     } else if (method === "broker.event") {
       this.dispatchEvent(msg.params);
+    } else if (method === "llm.complete.delta") {
+      this.routeDelta(msg.params);
     } else if (method === "shutdown") {
       await this.replyShutdown(id);
       this.stopped = true;
@@ -213,10 +234,67 @@ export class PluginAdapter {
     // Unknown notification (no id) — silently ignore per JSON-RPC §4.1.
   }
 
+  // ── child→host response routing ─────────────────────────────────
+
+  private routeResponse(id: number, msg: JsonRpcFrameLike): void {
+    const p = this.pending.get(id);
+    if (!p) return;
+    this.pending.delete(id);
+    const err = msg.error;
+    const code = err && typeof err.code === "number" ? err.code : -32603;
+    const emsg = err ? String(err.message ?? "") : "";
+    if (p.kind === "single") {
+      if (p.timer) clearTimeout(p.timer);
+      if (err) {
+        p.reject(new RpcServerError(code, emsg));
+      } else {
+        const r = msg.result;
+        p.resolve(typeof r === "object" && r !== null ? (r as Record<string, unknown>) : {});
+      }
+      return;
+    }
+    // stream — this is the final reply (finish_reason + usage, no content).
+    p.chunks.close();
+    if (err) {
+      p.rejectFinal(new RpcServerError(code, emsg));
+    } else {
+      p.resolveFinal(parseLlmCompleteResult(msg.result));
+    }
+  }
+
+  private routeDelta(params: unknown): void {
+    const p = (typeof params === "object" && params !== null ? params : {}) as {
+      request_id?: unknown;
+      chunk?: unknown;
+    };
+    const pending = typeof p.request_id === "number" ? this.pending.get(p.request_id) : undefined;
+    if (pending && pending.kind === "stream" && typeof p.chunk === "string") {
+      pending.chunks.push(p.chunk);
+    } else {
+      process.stderr.write(
+        `plugin: llm.complete.delta for unknown/non-stream request ${JSON.stringify(p.request_id)}, dropped\n`,
+      );
+    }
+  }
+
+  private abandonPending(): void {
+    for (const [id, p] of [...this.pending.entries()]) {
+      this.pending.delete(id);
+      if (p.kind === "single") {
+        if (p.timer) clearTimeout(p.timer);
+        p.reject(new RpcTransportError("adapter shutting down"));
+      } else {
+        p.chunks.close();
+        p.rejectFinal(new RpcTransportError("adapter shutting down"));
+      }
+    }
+  }
+
+  // ── lifecycle ───────────────────────────────────────────────────
+
   private replyInitialize(id: unknown): void {
     if (id === undefined) {
-      // No id → spec-violating notification; nothing to reply to.
-      return;
+      return; // spec-violating notification; nothing to reply to.
     }
     this.writeFrame(
       buildResponse(id as never, {
@@ -227,13 +305,13 @@ export class PluginAdapter {
   }
 
   private async replyShutdown(id: unknown): Promise<void> {
+    this.abandonPending();
     await this.drainInflight();
     if (this.onShutdown !== undefined) {
       try {
         await this.onShutdown();
       } catch (e) {
-        const reason = e instanceof Error ? e.message : String(e);
-        process.stderr.write(`plugin: onShutdown raised: ${reason}\n`);
+        process.stderr.write(`plugin: onShutdown raised: ${e instanceof Error ? e.message : String(e)}\n`);
       }
     }
     if (id !== undefined) {
@@ -258,8 +336,7 @@ export class PluginAdapter {
       topic = p.topic;
       event = Event.fromJson(p.event);
     } catch (e) {
-      const reason = e instanceof Error ? e.message : String(e);
-      process.stderr.write(`plugin: dispatch decode failed: ${reason}\n`);
+      process.stderr.write(`plugin: dispatch decode failed: ${e instanceof Error ? e.message : String(e)}\n`);
       return;
     }
 
@@ -267,8 +344,7 @@ export class PluginAdapter {
     const task: Promise<void> = Promise.resolve()
       .then(() => handler(topic, event, this.broker))
       .catch((e) => {
-        const reason = e instanceof Error ? e.message : String(e);
-        process.stderr.write(`plugin: onEvent raised: ${reason}\n`);
+        process.stderr.write(`plugin: onEvent raised: ${e instanceof Error ? e.message : String(e)}\n`);
       });
     this.inflight.add(task);
     task.finally(() => {
@@ -288,11 +364,11 @@ export class PluginAdapter {
   }
 }
 
-// Re-export ManifestError so importers can tell it apart from
-// generic PluginError without pulling errors.js too.
+// Re-export ManifestError so importers can tell it apart from generic
+// PluginError without pulling errors.js too.
 export { ManifestError } from "./errors.js";
 
-// Touch isStdoutGuardInstalled so test suites can assert the
-// constructor's side effect; not exported as part of the public
-// API surface.
+// Touch helpers/types referenced only for side effects / type-position
+// so the linter doesn't flag the imports as unused.
 void isStdoutGuardInstalled;
+void JSONRPC_VERSION;

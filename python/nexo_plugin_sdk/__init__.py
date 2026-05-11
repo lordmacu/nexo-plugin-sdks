@@ -1,15 +1,32 @@
 """Python SDK for nexo subprocess plugins.
 
 Child-side counterpart to the host's plugin protocol
-(``nexo-plugin-contract.md``). Public API mirrors the Rust SDK in
-``crates/microapp-sdk/`` and the TypeScript SDK in
-``extensions/sdk-typescript/``.
+(``nexo-plugin-contract.md``). Distributed on PyPI as ``nexoai``; the
+importable module is ``nexo_plugin_sdk``. Public API mirrors the Rust
+child SDK (``crates/microapp-sdk``, feature ``plugin``).
 """
 
 from .adapter import EventHandler, PluginAdapter, ShutdownHandler
 from .broker import BrokerSender
-from .errors import ManifestError, PluginError, WireError
+from .errors import (
+    ManifestError,
+    PluginError,
+    RpcDecodeError,
+    RpcError,
+    RpcServerError,
+    RpcTimeoutError,
+    RpcTransportError,
+    WireError,
+)
 from .events import Event
+from .host import (
+    DEFAULT_RPC_TIMEOUT,
+    LlmCompleteResult,
+    LlmStream,
+    Message,
+    MemoryEntry,
+    TokenCount,
+)
 from .manifest import read_manifest
 from .stdout_guard import (
     STDOUT_GUARD_MARKER,
@@ -33,10 +50,22 @@ __all__ = [
     "Event",
     "EventHandler",
     "ShutdownHandler",
+    # Host-call surface
+    "MemoryEntry",
+    "Message",
+    "TokenCount",
+    "LlmCompleteResult",
+    "LlmStream",
+    "DEFAULT_RPC_TIMEOUT",
     # Errors
     "PluginError",
     "ManifestError",
     "WireError",
+    "RpcError",
+    "RpcServerError",
+    "RpcTimeoutError",
+    "RpcTransportError",
+    "RpcDecodeError",
     # Manifest
     "read_manifest",
     # Stdout guard
@@ -53,4 +82,4 @@ __all__ = [
     "build_notification",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

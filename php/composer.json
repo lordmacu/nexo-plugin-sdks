@@ -22,7 +22,8 @@
     "autoload": {
         "psr-4": {
             "Nexo\\Plugin\\Sdk\\": "src/"
-        }
+        },
+        "files": ["src/Host.php"]
     },
     "scripts": {
         "test": "php tests/run-all.php"
