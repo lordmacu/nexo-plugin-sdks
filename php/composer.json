@@ -23,7 +23,7 @@
         "psr-4": {
             "Nexo\\Plugin\\Sdk\\": "src/"
         },
-        "files": ["src/Host.php"]
+        "files": ["src/Host.php", "src/Tool.php"]
     },
     "scripts": {
         "test": "php tests/run-all.php"
