@@ -1,0 +1,66 @@
+name: python
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'python/**'
+      - '.github/workflows/python.yml'
+    tags:
+      - 'python-v*'
+  pull_request:
+    paths:
+      - 'python/**'
+      - '.github/workflows/python.yml'
+
+defaults:
+  run:
+    working-directory: python
+
+jobs:
+  test:
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e .
+      - run: python -m unittest discover -v tests/
+
+  build-check:
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+
+  publish:
+    # Tag push `python-vX.Y.Z` -> PyPI via Trusted Publishing (OIDC).
+    # Falls back to PYPI_API_TOKEN secret if the env var is set.
+    if: ${{ startsWith(github.ref, 'refs/tags/python-v') }}
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install build
+      - run: python -m build
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: python/dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}   # ignored when Trusted Publishing is configured

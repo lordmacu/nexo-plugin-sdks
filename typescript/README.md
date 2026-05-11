@@ -1,14 +1,14 @@
 # nexo-plugin-sdk (TypeScript)
 
-Phase 31.5 — child-side SDK for nexo subprocess plugins written
+Child-side SDK for nexo subprocess plugins written
 in TypeScript or plain JavaScript. Mirrors the Rust counterpart
-in [`crates/microapp-sdk/`](../../crates/microapp-sdk/) and the
-Python counterpart in [`extensions/sdk-python/`](../sdk-python/).
-Same wire format ([`nexo-plugin-contract.md`](../../nexo-plugin-contract.md)),
+in [`crates/microapp-sdk/`](https://github.com/lordmacu/nexo-rs/tree/main/crates/microapp-sdk) and the
+Python counterpart in [`python/`](../python).
+Same wire format ([`nexo-plugin-contract.md`](https://github.com/lordmacu/nexo-rs/blob/main/nexo-plugin-contract.md)),
 different language.
 
 The reference plugin template lives at
-[`extensions/template-plugin-typescript/`](../template-plugin-typescript/);
+[the TypeScript plugin template](https://github.com/lordmacu/nexo-rs/tree/main/extensions/template-plugin-typescript) (or run `nexo plugin new --lang typescript`);
 copy that directory to start a new plugin.
 
 ## Public API
@@ -70,12 +70,12 @@ plugin-author mistakes recoverable rather than fatal:
 | `broker.event` (notification) | host → child | No JSON reply. Your `onEvent` handler runs in a detached task so the dispatch loop continues reading stdin while the handler awaits broker round-trips. |
 | `shutdown` | host → child | `{ ok: true }` after draining in-flight tasks + invoking your `onShutdown` (if set). |
 
-Full spec: [`nexo-plugin-contract.md`](../../nexo-plugin-contract.md).
+Full spec: [`nexo-plugin-contract.md`](https://github.com/lordmacu/nexo-rs/blob/main/nexo-plugin-contract.md).
 
 ## Tests
 
 ```bash
-cd extensions/sdk-typescript
+cd typescript
 npm install
 npm run build
 npm test

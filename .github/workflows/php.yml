@@ -1,0 +1,38 @@
+name: php
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'php/**'
+      - '.github/workflows/php.yml'
+  pull_request:
+    paths:
+      - 'php/**'
+      - '.github/workflows/php.yml'
+
+# Publishing: there is no publish job here. `php/` is mirrored to
+# lordmacu/nexo-plugin-sdk-php by php-split.yml; Packagist tracks that mirror
+# (it needs composer.json at a repo root, which a subdir can't give it).
+
+defaults:
+  run:
+    working-directory: php
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ['8.1', '8.2', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          extensions: pcntl, mbstring
+          tools: composer:v2
+      - run: composer validate --strict
+      - run: composer install --no-progress --prefer-dist --no-interaction
+      - run: php tests/run-all.php

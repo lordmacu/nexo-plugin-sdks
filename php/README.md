@@ -1,16 +1,16 @@
 # nexo/plugin-sdk (PHP)
 
-Phase 31.5.c — child-side SDK for nexo subprocess plugins
+Child-side SDK for nexo subprocess plugins
 written in PHP 8.1+. Mirrors the Rust counterpart in
-[`crates/microapp-sdk/`](../../crates/microapp-sdk/), the
-Python counterpart in [`extensions/sdk-python/`](../sdk-python/),
+[`crates/microapp-sdk/`](https://github.com/lordmacu/nexo-rs/tree/main/crates/microapp-sdk), the
+Python counterpart in [`python/`](../python),
 and the TypeScript counterpart in
-[`extensions/sdk-typescript/`](../sdk-typescript/). Same wire
-format ([`nexo-plugin-contract.md`](../../nexo-plugin-contract.md)),
+[`typescript/`](../typescript). Same wire
+format ([`nexo-plugin-contract.md`](https://github.com/lordmacu/nexo-rs/blob/main/nexo-plugin-contract.md)),
 different language.
 
 The reference plugin template lives at
-[`extensions/template-plugin-php/`](../template-plugin-php/);
+[the PHP plugin template](https://github.com/lordmacu/nexo-rs/tree/main/extensions/template-plugin-php) (or run `nexo plugin new --lang php`);
 copy that directory to start a new plugin.
 
 ## Public API
@@ -83,12 +83,12 @@ behavior.
 | `broker.event` (notification) | host → child | No JSON reply. Your `onEvent` handler runs in a Fiber so the dispatch loop continues reading stdin while the handler awaits broker round-trips. Author code can call `Fiber::suspend()` at await points to yield control. |
 | `shutdown` | host → child | `{ ok: true }` after draining in-flight Fibers + invoking your `onShutdown` (if set). |
 
-Full spec: [`nexo-plugin-contract.md`](../../nexo-plugin-contract.md).
+Full spec: [`nexo-plugin-contract.md`](https://github.com/lordmacu/nexo-rs/blob/main/nexo-plugin-contract.md).
 
 ## Tests
 
 ```bash
-cd extensions/sdk-php
+cd php
 composer install
 php tests/run-all.php
 ```

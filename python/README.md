@@ -2,14 +2,14 @@
 
 Child-side SDK for nexo subprocess plugins written in Python 3.10+.
 Mirrors the Rust counterpart in
-[`crates/microapp-sdk/`](../../crates/microapp-sdk/), the TypeScript
-counterpart in [`extensions/sdk-typescript/`](../sdk-typescript/) and
-the PHP counterpart in [`extensions/sdk-php/`](../sdk-php/) — same wire
-format ([`nexo-plugin-contract.md`](../../nexo-plugin-contract.md)),
+[`crates/microapp-sdk/`](https://github.com/lordmacu/nexo-rs/tree/main/crates/microapp-sdk), the TypeScript
+counterpart in [`typescript/`](../typescript) and
+the PHP counterpart in [`php/`](../php) — same wire
+format ([`nexo-plugin-contract.md`](https://github.com/lordmacu/nexo-rs/blob/main/nexo-plugin-contract.md)),
 different language.
 
 The reference plugin template lives at
-[`extensions/template-plugin-python/`](../template-plugin-python/);
+[the Python plugin template](https://github.com/lordmacu/nexo-rs/tree/main/extensions/template-plugin-python) (or run `nexo plugin new --lang python`);
 copy that directory to start a new plugin.
 
 ## Public API
@@ -92,12 +92,12 @@ bypasses it. Plugin authors who need stdout output should use
 | `broker.event` (notification) | host → child | No JSON reply. Your `on_event` handler runs in a detached task so the dispatch loop continues reading stdin while the handler awaits broker round-trips. |
 | `shutdown` | host → child | `{ ok: true }` after draining in-flight handler tasks + invoking your `on_shutdown` (if set). |
 
-Full spec: [`nexo-plugin-contract.md`](../../nexo-plugin-contract.md).
+Full spec: [`nexo-plugin-contract.md`](https://github.com/lordmacu/nexo-rs/blob/main/nexo-plugin-contract.md).
 
 ## Tests
 
 ```bash
-cd extensions/sdk-python
+cd python
 PYTHONPATH=. python3 -m unittest discover -v tests/
 ```
 

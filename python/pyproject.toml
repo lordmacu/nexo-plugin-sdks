@@ -26,9 +26,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/lordmacu/nexo-rs"
-Repository = "https://github.com/lordmacu/nexo-rs"
-"Bug Tracker" = "https://github.com/lordmacu/nexo-rs/issues"
+Homepage = "https://github.com/lordmacu/nexo-plugin-sdks"
+Repository = "https://github.com/lordmacu/nexo-plugin-sdks"
+"Bug Tracker" = "https://github.com/lordmacu/nexo-plugin-sdks/issues"
+"Wire contract" = "https://github.com/lordmacu/nexo-rs/blob/main/nexo-plugin-contract.md"
 
 [build-system]
 requires = ["setuptools>=68"]
