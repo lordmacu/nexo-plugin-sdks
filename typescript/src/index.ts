@@ -1,8 +1,7 @@
 /**
- * Phase 31.5 — public API for the TypeScript plugin SDK.
+ * Public API for the TypeScript plugin SDK (npm: `nexo-plugin-sdk`).
  *
- * Mirrors the Rust SDK in `crates/microapp-sdk/` and the Python
- * SDK in `extensions/sdk-python/nexo_plugin_sdk/`.
+ * Mirrors the Rust child SDK (`crates/microapp-sdk`, feature `plugin`).
  */
 
 export { PluginAdapter } from "./adapter.js";
@@ -12,13 +11,31 @@ export type {
   PluginAdapterOptions,
 } from "./adapter.js";
 export { BrokerSender } from "./broker.js";
-export type { LineWriter } from "./broker.js";
+export type { LineWriter, MemoryRecallOptions } from "./broker.js";
 export { Event } from "./events.js";
 export {
   PluginError,
   ManifestError,
   WireError,
+  RpcError,
+  RpcServerError,
+  RpcTimeoutError,
+  RpcTransportError,
+  RpcDecodeError,
 } from "./errors.js";
+export {
+  DEFAULT_RPC_TIMEOUT_MS,
+  LlmStream,
+  parseMemoryEntry,
+  parseLlmCompleteResult,
+} from "./host.js";
+export type {
+  MemoryEntry,
+  Message,
+  TokenCount,
+  LlmCompleteResult,
+  LlmCompleteOptions,
+} from "./host.js";
 export { parseManifest } from "./manifest.js";
 export type { ManifestPluginSection, ParsedManifest } from "./manifest.js";
 export {
@@ -43,4 +60,4 @@ export type {
   JsonRpcFrame,
 } from "./wire.js";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
