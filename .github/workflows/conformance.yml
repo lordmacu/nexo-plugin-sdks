@@ -1,0 +1,68 @@
+name: conformance
+
+# Cross-language conformance kit (Phase 31.12). Drives each scripting
+# SDK's conformance fixture through conformance/scenarios/*.json with the
+# shared Python mock-host. The Rust SDK runs the same kit in nexo-rs CI
+# (a shallow clone of this repo). See conformance/README.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'conformance/**'
+      - 'python/**'
+      - 'typescript/**'
+      - 'php/**'
+      - '.github/workflows/conformance.yml'
+  pull_request:
+    paths:
+      - 'conformance/**'
+      - 'python/**'
+      - 'typescript/**'
+      - 'php/**'
+      - '.github/workflows/conformance.yml'
+
+jobs:
+  matcher-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python conformance/test_lib.py
+
+  conformance:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lang: [python, typescript, php]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - if: matrix.lang == 'python'
+        run: pip install -e ./python
+
+      - if: matrix.lang == 'typescript'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - if: matrix.lang == 'typescript'
+        run: npm install --no-audit --no-fund && npm run build
+        working-directory: typescript
+
+      - if: matrix.lang == 'php'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pcntl, mbstring
+          tools: composer:v2
+      - if: matrix.lang == 'php'
+        run: composer install --no-progress --prefer-dist --no-interaction
+        working-directory: php
+
+      - run: python conformance/run.py --lang ${{ matrix.lang }}
