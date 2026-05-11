@@ -1,0 +1,37 @@
+{
+  "name": "tool.invoke: the -33401..-33405 error band + uncaught -> -33403 + non-serializable -> -33403",
+  "doc": "each tool maps to a distinct failure; assert error.code + error.data shape (message text is non-normative)",
+  "requires": ["tools"],
+  "manifest": "[plugin]\nid = \"confplugin\"\nversion = \"0.1.0\"\nname = \"Conf\"\ndescription = \"conformance fixture\"\nmin_nexo_version = \">=0.1.0\"\n\n[plugin.extends]\ntools = [\"confplugin_e1\", \"confplugin_e2\", \"confplugin_e3\", \"confplugin_e4\", \"confplugin_e5\", \"confplugin_e6\", \"confplugin_e7\"]\n",
+  "fixture_config": {
+    "declare_tools": ["confplugin_e1", "confplugin_e2", "confplugin_e3", "confplugin_e4", "confplugin_e5", "confplugin_e6", "confplugin_e7"],
+    "tool_handlers": {
+      "confplugin_e1": "raise:33401",
+      "confplugin_e2": "raise:33402",
+      "confplugin_e3": "raise:33403",
+      "confplugin_e4": "raise:33404",
+      "confplugin_e5": "raise:33405",
+      "confplugin_e6": "raise_generic",
+      "confplugin_e7": "return_unserializable"
+    }
+  },
+  "steps": [
+    { "send": { "jsonrpc": "2.0", "id": 1, "method": "tool.invoke", "params": { "plugin_id": "confplugin", "tool_name": "confplugin_e1" } } },
+    { "expect": { "jsonrpc": "2.0", "id": 1, "error": { "code": -33401, "message": "$ANY_STRING", "data": "$ABSENT" }, "result": "$ABSENT" } },
+    { "send": { "jsonrpc": "2.0", "id": 2, "method": "tool.invoke", "params": { "plugin_id": "confplugin", "tool_name": "confplugin_e2" } } },
+    { "expect": { "jsonrpc": "2.0", "id": 2, "error": { "code": -33402, "message": "$ANY_STRING", "data": { "details": { "field": "q" } } }, "result": "$ABSENT" } },
+    { "send": { "jsonrpc": "2.0", "id": 3, "method": "tool.invoke", "params": { "plugin_id": "confplugin", "tool_name": "confplugin_e3" } } },
+    { "expect": { "jsonrpc": "2.0", "id": 3, "error": { "code": -33403, "message": "$ANY_STRING", "data": "$ABSENT" }, "result": "$ABSENT" } },
+    { "send": { "jsonrpc": "2.0", "id": 4, "method": "tool.invoke", "params": { "plugin_id": "confplugin", "tool_name": "confplugin_e4" } } },
+    { "expect": { "jsonrpc": "2.0", "id": 4, "error": { "code": -33404, "message": "$ANY_STRING", "data": { "retry_after_ms": 5000 } }, "result": "$ABSENT" } },
+    { "send": { "jsonrpc": "2.0", "id": 5, "method": "tool.invoke", "params": { "plugin_id": "confplugin", "tool_name": "confplugin_e5" } } },
+    { "expect": { "jsonrpc": "2.0", "id": 5, "error": { "code": -33405, "message": "$ANY_STRING", "data": "$ABSENT" }, "result": "$ABSENT" } },
+    { "send": { "jsonrpc": "2.0", "id": 6, "method": "tool.invoke", "params": { "plugin_id": "confplugin", "tool_name": "confplugin_e6" } } },
+    { "expect": { "jsonrpc": "2.0", "id": 6, "error": { "code": -33403, "message": "$ANY_STRING", "data": "$ABSENT" }, "result": "$ABSENT" } },
+    { "send": { "jsonrpc": "2.0", "id": 7, "method": "tool.invoke", "params": { "plugin_id": "confplugin", "tool_name": "confplugin_e7" } } },
+    { "expect": { "jsonrpc": "2.0", "id": 7, "error": { "code": -33403, "message": "$ANY_STRING", "data": "$ABSENT" }, "result": "$ABSENT" } },
+    { "send": { "jsonrpc": "2.0", "id": 99, "method": "shutdown" } },
+    { "expect": { "jsonrpc": "2.0", "id": 99, "result": { "ok": true } } },
+    { "expect_exit": 0 }
+  ]
+}
