@@ -67,6 +67,37 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+## Host calls
+
+The `broker` handle passed into `on_event` can call back into the host
+— read the agent's long-term memory, or run an LLM completion via the
+agent's configured providers:
+
+```python
+async def on_event(topic, event, broker):
+    entries = await broker.memory_recall(agent_id="my_agent", query="user prefers concise answers", limit=5)
+    # entries: list[MemoryEntry]  (id, agent_id, content, tags, concept_tags, created_at, memory_type)
+
+    result = await broker.llm_complete(
+        provider="minimax", model="minimax-m2.5",
+        messages=[{"role": "user", "content": "summarize: ..."}],
+        system_prompt="You answer concisely.",
+    )
+    # result.content, result.finish_reason, result.usage.{prompt_tokens, completion_tokens}
+
+    stream = broker.llm_complete_stream(provider="minimax", model="minimax-m2.5",
+                                        messages=[{"role": "user", "content": "..."}])
+    async for chunk in stream:
+        ...                                # str chunks, in order
+    final = await stream.final_result()    # LlmCompleteResult; final.content is None (chunks were the content)
+```
+
+Failures raise an `RpcError`: `RpcServerError` (`.code` — `-32603` =
+backend/not-configured, `-32602` = bad params, `-32601` = not wired
+host-side), `RpcTimeoutError` (`.seconds`; default 30 s, override per
+call with `timeout=`), `RpcTransportError`, `RpcDecodeError`. Concurrent
+`broker.event` handlers can each have a host call in flight at once.
+
 ## Robustness defaults
 
 The `PluginAdapter` constructor defaults are picked to make the most
@@ -99,6 +130,7 @@ bypasses it. Plugin authors who need stdout output should use
 | `initialize` | host → child | `{ manifest, server_version }` automatically — the SDK reads + validates your manifest TOML at construction time (incl. the `^[a-z][a-z0-9_]{0,31}$` `plugin.id` slug regex the host enforces). |
 | `broker.event` (notification) | host → child | No JSON reply. Your `on_event` handler runs in a detached task so the dispatch loop continues reading stdin while the handler awaits broker round-trips. |
 | `shutdown` | host → child | `{ ok: true }` after draining in-flight handler tasks + invoking your `on_shutdown` (if set). |
+| `memory.recall` / `llm.complete` (+ `llm.complete.delta`) | child → host | Issued by `broker.memory_recall` / `broker.llm_complete` / `broker.llm_complete_stream` — the SDK assigns the request id, awaits the matching reply, and multiplexes concurrent calls. |
 
 Full spec: [`nexo-plugin-contract.md`](https://github.com/lordmacu/nexo-rs/blob/main/nexo-plugin-contract.md).
 
@@ -109,7 +141,7 @@ cd python
 PYTHONPATH=. python3 -m unittest discover -v tests/
 ```
 
-21 tests covering: the handshake (initialize reply, unknown method
+31 tests covering: the handshake (initialize reply, unknown method
 `-32601`, unknown notification ignored), manifest validation (missing
 id, invalid TOML, id-regex violation), dispatch (handler invocation,
 non-blocking reader, in-flight drain, oversized frame rejected with
@@ -117,8 +149,11 @@ continued dispatch), the stdout guard (idempotent install, install /
 uninstall round-trip, divert vs passthrough, chunked print-style
 writes, partial-line flush, attr delegation, handler-print diverted
 while the blessed frame stays clean), the `broker.publish` back
-channel, and lifecycle (double `run()` rejected, SIGTERM exits 0,
-SIGTERM drains an in-flight handler before exiting).
+channel, host calls (`memory.recall` / `llm.complete` happy paths,
+streaming, `-32603`, per-call timeout, out-of-order multiplexing,
+shutdown-while-in-flight, unknown-response-id dropped), and lifecycle
+(double `run()` rejected, SIGTERM exits 0, SIGTERM drains an in-flight
+handler before exiting).
 
 ## Phase tracking
 
@@ -133,3 +168,7 @@ SIGTERM drains an in-flight handler before exiting).
   [`nexo-plugin-sdks`](https://github.com/lordmacu/nexo-plugin-sdks)
   mono-repo and published to PyPI as `nexoai` (the `nexo-plugin-sdk`
   name was taken). Tagged `python-vX.Y.Z`.
+- 31.9 (shipped, 0.3.0) — child→host call surface: `broker.memory_recall`
+  / `broker.llm_complete` / `broker.llm_complete_stream`, the
+  `RpcError` hierarchy, request multiplexing. Parity with the Rust
+  child SDK. 31 tests.
