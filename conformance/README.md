@@ -122,7 +122,7 @@ A conformance fixture is an executable that:
 | `tool_handler` | a handler-string (below) | the default tool behavior for every declared tool |
 | `tool_handlers` | `{ "<name>": "<handler-string>" }` | per-tool override of `tool_handler` |
 | `use_tool_context` | bool (default `true`) | register the tool handler via `on_tool_with_context` (`true`) or `on_tool` (`false`) |
-| `event_handler` | `"publish_marker"` / `"recall_then_publish"` / `"slow_publish:<ms>"` / `"never"` (default) | the `on_event` behavior |
+| `event_handler` | `"publish_marker"` / `"host_call"` / `"slow_publish:<ms>"` / `"never"` (default) | the `on_event` behavior |
 | `capabilities` | `string[]` | echoed by `--print-capabilities` (default `["core","memory","llm","tools"]`) |
 
 Tool handler-strings: `"echo"` (return `{"echoed": args, "agent": agent_id, "plugin": plugin_id}`) ·
@@ -134,10 +134,21 @@ Tool handler-strings: `"echo"` (return `{"echoed": args, "agent": agent_id, "plu
 `"return_unserializable"` (return a value `json.dumps`/`JSON.stringify`/`json_encode` can't handle → host should see `-33403`) ·
 `"not_found"` (raise the `ToolNotFound` error for the called `tool_name`).
 
-Event handler-strings: `"publish_marker"` (on `broker.event`, publish a `broker.publish` to `plugin.inbound.conf` with payload `{"event_seen": event.payload.get("k")}`) ·
-`"recall_then_publish"` (call `broker.memory_recall(agent_id="conf", query=event.payload["q"])`, publish `{"recalled":[contents]}`) ·
+Event handler-strings:
+`"publish_marker"` (on `broker.event`, publish a `broker.publish` to `plugin.inbound.conf` with payload `{"event_seen": event.payload.get("k")}`) ·
 `"slow_publish:<ms>"` (yield ~`<ms>` ms, then publish `{"event_seen": event.payload.get("k")}`) ·
-`"never"` (no `on_event` handler registered).
+`"never"` (no `on_event` handler registered) ·
+`"host_call"` — dispatches on `event.payload["op"]` (the host-call exerciser, mirroring the per-SDK `DRIVER_HOST_CALL`):
+
+| `op` | does | publishes (to `plugin.inbound.conf`) |
+|------|------|--------------------------------------|
+| `"recall"` (+ optional `q`, `timeout`) | `broker.memory_recall(agent_id="conf", query=q\|"q", timeout=timeout)` | `{"recalled":[contents]}` |
+| `"recall_error"` | `broker.memory_recall(...)`; catches the server-error | `{"rpc_error":{"code":<code>}}` |
+| `"recall_timeout"` (+ optional `timeout`, default 0.4) | `broker.memory_recall(..., timeout=timeout)`; catches the timeout | `{"timed_out":true}` |
+| `"complete"` (+ optional `provider`, `model`) | `broker.llm_complete(provider, model, messages=[{role:"user",content:"hi"}])` | `{"content":<c>,"finish_reason":<r>,"ct":<completion_tokens>}` |
+| `"complete_error"` | `broker.llm_complete(...)`; catches the server-error | `{"rpc_error":{"code":<code>}}` |
+| `"stream"` | `broker.llm_complete_stream(...)`, consume chunks, await the final | `{"joined":<chunks joined>,"content_is_none":true,"finish_reason":<r>}` |
+| `"inflight"` | `broker.memory_recall(...)`; the host never replies; on shutdown the SDK abandons it → handler catches the transport error | writes `INFLIGHT_GOT_TRANSPORT` to stderr (no publish) |
 
 ## Adding things
 

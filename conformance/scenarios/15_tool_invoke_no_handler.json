@@ -1,0 +1,13 @@
+{
+  "name": "tool.invoke: arrives at a plugin with no tool handler -> -32601",
+  "doc": "the plugin declared no tools and registered no handler; tool.invoke replies method-not-found, dispatch survives",
+  "manifest": "[plugin]\nid = \"confplugin\"\nversion = \"0.1.0\"\nname = \"Conf\"\ndescription = \"conformance fixture\"\nmin_nexo_version = \">=0.1.0\"\n",
+  "fixture_config": {},
+  "steps": [
+    { "send": { "jsonrpc": "2.0", "id": 8, "method": "tool.invoke", "params": { "plugin_id": "confplugin", "tool_name": "anything" } } },
+    { "expect": { "jsonrpc": "2.0", "id": 8, "error": { "code": -32601, "message": "$ANY_STRING" }, "result": "$ABSENT" } },
+    { "send": { "jsonrpc": "2.0", "id": 99, "method": "shutdown" } },
+    { "expect": { "jsonrpc": "2.0", "id": 99, "result": { "ok": true } } },
+    { "expect_exit": 0 }
+  ]
+}

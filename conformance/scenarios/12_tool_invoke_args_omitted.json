@@ -1,0 +1,13 @@
+{
+  "name": "tool.invoke: args + agent_id omitted -> decoded as null",
+  "requires": ["tools"],
+  "manifest": "[plugin]\nid = \"confplugin\"\nversion = \"0.1.0\"\nname = \"Conf\"\ndescription = \"conformance fixture\"\nmin_nexo_version = \">=0.1.0\"\n\n[plugin.extends]\ntools = [\"confplugin_echo\"]\n",
+  "fixture_config": { "declare_tools": ["confplugin_echo"], "tool_handler": "echo" },
+  "steps": [
+    { "send": { "jsonrpc": "2.0", "id": 6, "method": "tool.invoke", "params": { "plugin_id": "confplugin", "tool_name": "confplugin_echo" } } },
+    { "expect": { "jsonrpc": "2.0", "id": 6, "result": { "echoed": null, "agent": null, "plugin": "confplugin" }, "error": "$ABSENT" } },
+    { "send": { "jsonrpc": "2.0", "id": 99, "method": "shutdown" } },
+    { "expect": { "jsonrpc": "2.0", "id": 99, "result": { "ok": true } } },
+    { "expect_exit": 0 }
+  ]
+}

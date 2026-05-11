@@ -1,0 +1,19 @@
+{
+  "name": "oversize / malformed inbound frames -> logged + dispatch continues",
+  "doc": "a >MAX_FRAME_BYTES line, a non-JSON line, and a JSON-non-object line are each logged to stderr and dropped; the next initialize still works",
+  "manifest": "[plugin]\nid = \"confplugin\"\nversion = \"0.1.0\"\nname = \"Conf\"\ndescription = \"conformance fixture\"\nmin_nexo_version = \">=0.1.0\"\n",
+  "fixture_config": {},
+  "steps": [
+    { "send_raw_repeat": { "char": "x", "count": 1060000 } },
+    { "expect_stderr_contains": "max" },
+    { "send_raw": "not json at all" },
+    { "expect_stderr_contains": "malformed" },
+    { "send_raw": "[1, 2, 3]" },
+    { "expect_stderr_contains": "object" },
+    { "send": { "jsonrpc": "2.0", "id": 10, "method": "initialize", "params": {} } },
+    { "expect": { "jsonrpc": "2.0", "id": 10, "result": "$ANY_OBJECT" } },
+    { "send": { "jsonrpc": "2.0", "id": 99, "method": "shutdown" } },
+    { "expect": { "jsonrpc": "2.0", "id": 99, "result": { "ok": true } } },
+    { "expect_exit": 0 }
+  ]
+}

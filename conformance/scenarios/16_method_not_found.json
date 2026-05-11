@@ -1,0 +1,15 @@
+{
+  "name": "unknown method -> -32601; unknown notification -> silently ignored",
+  "doc": "a request with an unknown method gets -32601; a notification (no id) with an unknown method gets no reply",
+  "manifest": "[plugin]\nid = \"confplugin\"\nversion = \"0.1.0\"\nname = \"Conf\"\ndescription = \"conformance fixture\"\nmin_nexo_version = \">=0.1.0\"\n",
+  "fixture_config": {},
+  "steps": [
+    { "send": { "jsonrpc": "2.0", "id": 9, "method": "bogus.method", "params": {} } },
+    { "expect": { "jsonrpc": "2.0", "id": 9, "error": { "code": -32601, "message": "$ANY_STRING" }, "result": "$ABSENT" } },
+    { "send": { "jsonrpc": "2.0", "method": "bogus.notification", "params": {} } },
+    { "expect_no_frame": { "within_ms": 400 } },
+    { "send": { "jsonrpc": "2.0", "id": 99, "method": "shutdown" } },
+    { "expect": { "jsonrpc": "2.0", "id": 99, "result": { "ok": true } } },
+    { "expect_exit": 0 }
+  ]
+}

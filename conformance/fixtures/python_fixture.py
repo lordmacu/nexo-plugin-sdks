@@ -32,7 +32,7 @@ from nexo_plugin_sdk import (  # noqa: E402
     read_manifest,
     text_result,
 )
-from nexo_plugin_sdk.errors import RpcServerError, RpcTimeoutError  # noqa: E402
+from nexo_plugin_sdk.errors import RpcServerError, RpcTimeoutError, RpcTransportError  # noqa: E402
 
 DEFAULT_CAPS = ["core", "memory", "llm", "tools"]
 
@@ -168,6 +168,14 @@ def _make_event_handler(cfg: dict, plugin_id: str):
                         "plugin.inbound.conf",
                         Event.new("plugin.inbound.conf", plugin_id, {"rpc_error": {"code": e.code}}),
                     )
+            elif op == "inflight":
+                # The host never replies; on shutdown the adapter abandons
+                # the pending call → handler gets RpcTransportError.
+                try:
+                    await broker.memory_recall(agent_id="conf", query="q")
+                except RpcTransportError:
+                    sys.stderr.write("INFLIGHT_GOT_TRANSPORT\n")
+                    sys.stderr.flush()
             elif op == "stream":
                 stream = broker.llm_complete_stream(provider="minimax", model="m", messages=[{"role": "user", "content": "hi"}])
                 chunks = []

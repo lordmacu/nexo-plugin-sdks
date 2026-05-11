@@ -1,0 +1,19 @@
+{
+  "name": "llm.complete streaming: stream:true request, llm.complete.delta chunks, final reply without content",
+  "doc": "the fixture reassembles the chunks and reports content is null on the final result",
+  "requires": ["llm"],
+  "manifest": "[plugin]\nid = \"confplugin\"\nversion = \"0.1.0\"\nname = \"Conf\"\ndescription = \"conformance fixture\"\nmin_nexo_version = \">=0.1.0\"\n",
+  "fixture_config": { "event_handler": "host_call" },
+  "steps": [
+    { "send": { "jsonrpc": "2.0", "method": "broker.event", "params": { "topic": "plugin.in", "event": { "topic": "plugin.in", "source": "host", "payload": { "op": "stream" } } } } },
+    { "expect_request": { "jsonrpc": "2.0", "id": "$capture:rid", "method": "llm.complete", "params": { "provider": "minimax", "model": "m", "messages": [ { "role": "user", "content": "hi" } ], "max_tokens": "$ANY_INT", "temperature": "$ANY_NUMBER", "stream": true } } },
+    { "send": { "jsonrpc": "2.0", "method": "llm.complete.delta", "params": { "request_id": "$capture:rid", "chunk": "a" } } },
+    { "send": { "jsonrpc": "2.0", "method": "llm.complete.delta", "params": { "request_id": "$capture:rid", "chunk": "b" } } },
+    { "send": { "jsonrpc": "2.0", "method": "llm.complete.delta", "params": { "request_id": "$capture:rid", "chunk": "c" } } },
+    { "send": { "jsonrpc": "2.0", "id": "$capture:rid", "result": { "finish_reason": "stop", "usage": { "prompt_tokens": 1, "completion_tokens": 3 } } } },
+    { "expect": { "jsonrpc": "2.0", "method": "broker.publish", "params": { "topic": "plugin.inbound.conf", "event": { "topic": "plugin.inbound.conf", "source": "confplugin", "payload": { "joined": "abc", "content_is_none": true, "finish_reason": "stop" } } } } },
+    { "send": { "jsonrpc": "2.0", "id": 99, "method": "shutdown" } },
+    { "expect": { "jsonrpc": "2.0", "id": 99, "result": { "ok": true } } },
+    { "expect_exit": 0 }
+  ]
+}

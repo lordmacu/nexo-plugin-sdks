@@ -1,0 +1,15 @@
+{
+  "name": "shutdown drain: an in-flight memory.recall the host never answers is abandoned, shutdown still prompt",
+  "doc": "the handler's host call gets a transport error on shutdown; {ok:true} comes back promptly, the process exits 0",
+  "requires": ["memory"],
+  "manifest": "[plugin]\nid = \"confplugin\"\nversion = \"0.1.0\"\nname = \"Conf\"\ndescription = \"conformance fixture\"\nmin_nexo_version = \">=0.1.0\"\n",
+  "fixture_config": { "event_handler": "host_call" },
+  "steps": [
+    { "send": { "jsonrpc": "2.0", "method": "broker.event", "params": { "topic": "plugin.in", "event": { "topic": "plugin.in", "source": "host", "payload": { "op": "inflight" } } } } },
+    { "expect": { "jsonrpc": "2.0", "id": "$ANY_INT", "method": "memory.recall", "params": { "agent_id": "conf", "query": "q", "limit": 10 } } },
+    { "send": { "jsonrpc": "2.0", "id": 99, "method": "shutdown" } },
+    { "expect": { "jsonrpc": "2.0", "id": 99, "result": { "ok": true } }, "timeout_ms": 5000 },
+    { "expect_stderr_contains": "INFLIGHT_GOT_TRANSPORT" },
+    { "expect_exit": 0 }
+  ]
+}
