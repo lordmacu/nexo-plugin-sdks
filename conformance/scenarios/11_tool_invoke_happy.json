@@ -1,0 +1,16 @@
+{
+  "name": "tool.invoke: happy path (echo) + tools advertised at initialize",
+  "doc": "declare_tools=[confplugin_echo]; initialize carries the catalog; tool.invoke {args, agent_id} -> result echoed verbatim, no error key",
+  "requires": ["tools"],
+  "manifest": "[plugin]\nid = \"confplugin\"\nversion = \"0.1.0\"\nname = \"Conf\"\ndescription = \"conformance fixture\"\nmin_nexo_version = \">=0.1.0\"\n\n[plugin.extends]\ntools = [\"confplugin_echo\"]\n",
+  "fixture_config": { "declare_tools": ["confplugin_echo"], "tool_handler": "echo" },
+  "steps": [
+    { "send": { "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} } },
+    { "expect": { "jsonrpc": "2.0", "id": 1, "result": { "manifest": "$IGNORE", "server_version": "$ANY_STRING", "tools": [ { "name": "confplugin_echo", "description": "$ANY_STRING", "input_schema": "$ANY_OBJECT" } ] } } },
+    { "send": { "jsonrpc": "2.0", "id": 5, "method": "tool.invoke", "params": { "plugin_id": "confplugin", "tool_name": "confplugin_echo", "args": { "x": 1 }, "agent_id": "a" } } },
+    { "expect": { "jsonrpc": "2.0", "id": 5, "result": { "echoed": { "x": 1 }, "agent": "a", "plugin": "confplugin" }, "error": "$ABSENT" } },
+    { "send": { "jsonrpc": "2.0", "id": 99, "method": "shutdown" } },
+    { "expect": { "jsonrpc": "2.0", "id": 99, "result": { "ok": true } } },
+    { "expect_exit": 0 }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "memory.recall: host returns a JSON-RPC error -> fixture surfaces the code",
+  "doc": "host replies {error:{code:-32603,...}}; the fixture's RpcServerError-equivalent carries .code",
+  "requires": ["memory"],
+  "manifest": "[plugin]\nid = \"confplugin\"\nversion = \"0.1.0\"\nname = \"Conf\"\ndescription = \"conformance fixture\"\nmin_nexo_version = \">=0.1.0\"\n",
+  "fixture_config": { "event_handler": "host_call" },
+  "steps": [
+    { "send": { "jsonrpc": "2.0", "method": "broker.event", "params": { "topic": "plugin.in", "event": { "topic": "plugin.in", "source": "host", "payload": { "op": "recall_error" } } } } },
+    { "expect_request": { "jsonrpc": "2.0", "id": "$capture:rid", "method": "memory.recall", "params": { "agent_id": "conf", "query": "q", "limit": 10 } }, "reply": { "jsonrpc": "2.0", "id": "$capture:rid", "error": { "code": -32603, "message": "memory not configured" } } },
+    { "expect": { "jsonrpc": "2.0", "method": "broker.publish", "params": { "topic": "plugin.inbound.conf", "event": { "topic": "plugin.inbound.conf", "source": "confplugin", "payload": { "rpc_error": { "code": -32603 } } } } } },
+    { "send": { "jsonrpc": "2.0", "id": 99, "method": "shutdown" } },
+    { "expect": { "jsonrpc": "2.0", "id": 99, "result": { "ok": true } } },
+    { "expect_exit": 0 }
+  ]
+}

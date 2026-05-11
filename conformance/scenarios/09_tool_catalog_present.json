@@ -1,0 +1,13 @@
+{
+  "name": "tool catalog: initialize reply carries declared tools in order",
+  "requires": ["tools"],
+  "manifest": "[plugin]\nid = \"confplugin\"\nversion = \"0.1.0\"\nname = \"Conf\"\ndescription = \"conformance fixture\"\nmin_nexo_version = \">=0.1.0\"\n\n[plugin.extends]\ntools = [\"confplugin_a\", \"confplugin_b\"]\n",
+  "fixture_config": { "declare_tools": ["confplugin_a", "confplugin_b"] },
+  "steps": [
+    { "send": { "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} } },
+    { "expect": { "jsonrpc": "2.0", "id": 1, "result": { "manifest": "$IGNORE", "server_version": "$ANY_STRING", "tools": [ { "name": "confplugin_a", "description": "$ANY_STRING", "input_schema": "$ANY_OBJECT" }, { "name": "confplugin_b", "description": "$ANY_STRING", "input_schema": "$ANY_OBJECT" } ] } } },
+    { "send": { "jsonrpc": "2.0", "id": 99, "method": "shutdown" } },
+    { "expect": { "jsonrpc": "2.0", "id": 99, "result": { "ok": true } } },
+    { "expect_exit": 0 }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "broker.event -> broker.publish marker",
+  "doc": "host delivers a broker.event; the fixture publishes a derived broker.publish notification",
+  "manifest": "[plugin]\nid = \"confplugin\"\nversion = \"0.1.0\"\nname = \"Conf\"\ndescription = \"conformance fixture\"\nmin_nexo_version = \">=0.1.0\"\n",
+  "fixture_config": { "event_handler": "publish_marker" },
+  "steps": [
+    { "send": { "jsonrpc": "2.0", "method": "broker.event", "params": { "topic": "plugin.in", "event": { "topic": "plugin.in", "source": "host", "payload": { "k": "v1" } } } } },
+    { "expect": { "jsonrpc": "2.0", "method": "broker.publish", "params": { "topic": "plugin.inbound.conf", "event": { "topic": "plugin.inbound.conf", "source": "confplugin", "payload": { "event_seen": "v1" } } } } },
+    { "send": { "jsonrpc": "2.0", "id": 99, "method": "shutdown" } },
+    { "expect": { "jsonrpc": "2.0", "id": 99, "result": { "ok": true } } },
+    { "expect_exit": 0 }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "shutdown drain: an in-flight tool.invoke finishes before the shutdown ack",
+  "doc": "host sends a slow tool.invoke then immediately shutdown; the tool result lands first, then {ok:true}",
+  "requires": ["tools"],
+  "manifest": "[plugin]\nid = \"confplugin\"\nversion = \"0.1.0\"\nname = \"Conf\"\ndescription = \"conformance fixture\"\nmin_nexo_version = \">=0.1.0\"\n\n[plugin.extends]\ntools = [\"confplugin_slow\"]\n",
+  "fixture_config": { "declare_tools": ["confplugin_slow"], "tool_handlers": { "confplugin_slow": "slow:300" } },
+  "steps": [
+    { "send": { "jsonrpc": "2.0", "id": 1, "method": "tool.invoke", "params": { "plugin_id": "confplugin", "tool_name": "confplugin_slow" } } },
+    { "send": { "jsonrpc": "2.0", "id": 99, "method": "shutdown" } },
+    { "expect": { "jsonrpc": "2.0", "id": 1, "result": { "content": [ { "type": "text", "text": "done" } ], "is_error": false }, "error": "$ABSENT" }, "timeout_ms": 5000 },
+    { "expect": { "jsonrpc": "2.0", "id": 99, "result": { "ok": true } }, "timeout_ms": 5000 },
+    { "expect_exit": 0 }
+  ]
+}

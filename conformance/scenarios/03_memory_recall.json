@@ -1,0 +1,15 @@
+{
+  "name": "memory.recall: child->host request, host replies entries, fixture echoes them",
+  "doc": "the fixture calls broker.memory_recall in an event handler; host serves the request frame + a canned {entries:[...]} reply",
+  "requires": ["memory"],
+  "manifest": "[plugin]\nid = \"confplugin\"\nversion = \"0.1.0\"\nname = \"Conf\"\ndescription = \"conformance fixture\"\nmin_nexo_version = \">=0.1.0\"\n",
+  "fixture_config": { "event_handler": "host_call" },
+  "steps": [
+    { "send": { "jsonrpc": "2.0", "method": "broker.event", "params": { "topic": "plugin.in", "event": { "topic": "plugin.in", "source": "host", "payload": { "op": "recall", "q": "prefs" } } } } },
+    { "expect_request": { "jsonrpc": "2.0", "id": "$capture:rid", "method": "memory.recall", "params": { "agent_id": "conf", "query": "prefs", "limit": 10 } }, "reply": { "jsonrpc": "2.0", "id": "$capture:rid", "result": { "entries": [ { "id": "m1", "agent_id": "a", "content": "c1" } ] } } },
+    { "expect": { "jsonrpc": "2.0", "method": "broker.publish", "params": { "topic": "plugin.inbound.conf", "event": { "topic": "plugin.inbound.conf", "source": "confplugin", "payload": { "recalled": ["c1"] } } } } },
+    { "send": { "jsonrpc": "2.0", "id": 99, "method": "shutdown" } },
+    { "expect": { "jsonrpc": "2.0", "id": 99, "result": { "ok": true } } },
+    { "expect_exit": 0 }
+  ]
+}

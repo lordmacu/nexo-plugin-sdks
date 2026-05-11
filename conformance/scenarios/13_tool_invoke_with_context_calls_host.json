@@ -1,0 +1,15 @@
+{
+  "name": "tool.invoke: with-context handler calls memory.recall mid-invocation",
+  "doc": "ctx.broker is the on_event broker handle; a tool body can round-trip a host call before returning",
+  "requires": ["tools", "memory"],
+  "manifest": "[plugin]\nid = \"confplugin\"\nversion = \"0.1.0\"\nname = \"Conf\"\ndescription = \"conformance fixture\"\nmin_nexo_version = \">=0.1.0\"\n\n[plugin.extends]\ntools = [\"confplugin_recall\"]\n",
+  "fixture_config": { "declare_tools": ["confplugin_recall"], "tool_handler": "recall_then_return", "use_tool_context": true },
+  "steps": [
+    { "send": { "jsonrpc": "2.0", "id": 7, "method": "tool.invoke", "params": { "plugin_id": "confplugin", "tool_name": "confplugin_recall", "args": { "q": "prefs" }, "agent_id": "a" } } },
+    { "expect_request": { "jsonrpc": "2.0", "id": "$capture:rid", "method": "memory.recall", "params": { "agent_id": "a", "query": "prefs", "limit": 10 } }, "reply": { "jsonrpc": "2.0", "id": "$capture:rid", "result": { "entries": [ { "id": "m1", "agent_id": "a", "content": "concise" } ] } } },
+    { "expect": { "jsonrpc": "2.0", "id": 7, "result": { "recalled": ["concise"], "plugin_id": "confplugin" }, "error": "$ABSENT" } },
+    { "send": { "jsonrpc": "2.0", "id": 99, "method": "shutdown" } },
+    { "expect": { "jsonrpc": "2.0", "id": 99, "result": { "ok": true } } },
+    { "expect_exit": 0 }
+  ]
+}

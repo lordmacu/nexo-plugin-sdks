@@ -30,6 +30,31 @@ nexo plugin new my-plugin --lang python   # or: typescript, php, rust
 
 The generated project depends on the published SDK package.
 
+## Conformance
+
+[`conformance/`](./conformance) is a cross-language conformance kit: one
+Python mock-host, a set of declarative scenarios (`conformance/scenarios/*.json`)
+whose `expect*` steps are the golden, and one config-driven fixture per
+SDK. An SDK is **conformant** iff `python conformance/run.py --lang <lang>`
+passes for it — the kit drives the fixture through every contract
+exchange (`initialize` / `shutdown` / `broker.event` / `broker.publish` /
+`memory.recall` / `llm.complete` (+ streaming) / `tool.invoke` + the
+catalog) and diffs its frames structurally.
+
+```bash
+python conformance/run.py --lang python      # also: typescript, php
+```
+
+CI ([`.github/workflows/conformance.yml`](.github/workflows/conformance.yml))
+runs the `{python, typescript, php}` matrix on every push/PR. The Rust
+SDK (which lives in [`nexo-rs`](https://github.com/lordmacu/nexo-rs))
+runs the same kit in its own CI — a shallow clone of this repo + `--lang
+rust --fixture <built-binary>`. The kit checks **frame structure, not
+message text**, and does **not** replace the per-SDK test suites. See
+[`conformance/README.md`](./conformance/README.md) for the scenario
+format, the matcher vocabulary, and how to add scenarios / SDKs /
+contract surfaces.
+
 ## Repo layout
 
 Each `<lang>/` subdir is a self-contained package with its own `README.md`,

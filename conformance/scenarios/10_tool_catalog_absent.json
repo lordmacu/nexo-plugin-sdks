@@ -1,0 +1,13 @@
+{
+  "name": "tool catalog: empty declare_tools -> initialize reply omits the tools array",
+  "doc": "an empty catalog is treated the same as not declaring one — no tools key in the reply",
+  "manifest": "[plugin]\nid = \"confplugin\"\nversion = \"0.1.0\"\nname = \"Conf\"\ndescription = \"conformance fixture\"\nmin_nexo_version = \">=0.1.0\"\n",
+  "fixture_config": { "declare_tools": [] },
+  "steps": [
+    { "send": { "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} } },
+    { "expect": { "jsonrpc": "2.0", "id": 1, "result": { "manifest": "$IGNORE", "server_version": "$ANY_STRING", "tools": "$ABSENT" } } },
+    { "send": { "jsonrpc": "2.0", "id": 99, "method": "shutdown" } },
+    { "expect": { "jsonrpc": "2.0", "id": 99, "result": { "ok": true } } },
+    { "expect_exit": 0 }
+  ]
+}
