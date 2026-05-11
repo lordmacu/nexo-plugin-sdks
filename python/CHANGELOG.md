@@ -6,6 +6,41 @@ All notable changes to the Python plugin SDK (PyPI distribution name
 `python-vX.Y.Z` in the [nexo-plugin-sdks](https://github.com/lordmacu/nexo-plugin-sdks)
 mono-repo.
 
+## 0.4.0 — 2026-05-11
+
+Tool surface (nexo-rs sub-phase 31.10) — subprocess plugins written in
+Python can now contribute agent tools, reaching parity with the Rust SDK
+on `tool.invoke` (contract §4.1.1 + §5.t).
+
+### Added
+- `PluginAdapter(..., tools=[ToolDef(name, description, input_schema)])`
+  — the catalog is advertised in the `initialize` reply's `tools` array
+  (contract §4.1.1). Also settable via `.declare_tools([...])`.
+- `PluginAdapter(..., on_tool=fn(inv))` / `on_tool_with_context=fn(inv, ctx)`
+  (also `.on_tool(...)` / `.on_tool_with_context(...)`). The handler may
+  be sync or async; the with-context variant wins when both are set.
+  `ctx.broker` is the same broker handle `on_event` receives, so a tool
+  body can `memory_recall` / `llm_complete` mid-invocation. `tool.invoke`
+  runs on a detached task and is awaited by the shutdown drain.
+- `ToolDef`, `ToolInvocation` (`plugin_id` / `tool_name` / `args` /
+  `agent_id`), `ToolContext` (`broker` / `plugin_id`).
+- `ToolInvocationError` band → JSON-RPC `-33401..-33405`: `ToolNotFound`
+  / `ToolArgumentInvalid` (`.details`) / `ToolExecutionFailed` /
+  `ToolUnavailable` (`.retry_after_ms`) / `ToolDenied`. An uncaught
+  generic exception in a handler maps to `-33403`; a `tool.invoke` with
+  no handler registered replies `-32601`.
+- `text_result(text, is_error=False)` — the conventional
+  `{content:[{type:"text",text}], is_error}` result shape.
+
+### Changed
+- The `initialize` reply now carries `tools: [...]` when a non-empty
+  catalog was declared (omitted otherwise — additive).
+
+### Notes
+- Declaring a tool whose `name` is not in the manifest's
+  `[plugin.extends].tools` raises `ManifestError` at construction —
+  mirrors the host's hard-failure on the same drift.
+
 ## 0.3.0 — 2026-05-11
 
 Child→host call surface (nexo-rs sub-phase 31.9) — the broker handle

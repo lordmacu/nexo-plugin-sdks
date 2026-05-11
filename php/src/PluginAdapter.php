@@ -39,6 +39,12 @@ final class PluginAdapter
     private bool $enableStdoutGuard;
     private int $maxFrameBytes;
     private bool $handleProcessSignals;
+    /** @var ToolDef[] */
+    private array $declaredTools = [];
+    /** @var (callable(ToolInvocation): mixed)|null */
+    private $onTool = null;
+    /** @var (callable(ToolInvocation, ToolContext): mixed)|null */
+    private $onToolWithContext = null;
 
     private bool $started = false;
     private bool $stopped = false;
@@ -74,6 +80,36 @@ final class PluginAdapter
         $this->enableStdoutGuard = $opts['enableStdoutGuard'] ?? true;
         $this->maxFrameBytes = $opts['maxFrameBytes'] ?? Wire::MAX_FRAME_BYTES;
         $this->handleProcessSignals = $opts['handleProcessSignals'] ?? true;
+
+        // ── tool dispatch (contract §4.1.1 + §5.t) ──────────────────
+        if (isset($opts['tools']) && is_array($opts['tools'])) {
+            foreach ($opts['tools'] as $t) {
+                if (!$t instanceof ToolDef) {
+                    throw new PluginError("PluginAdapter 'tools' option must be an array of ToolDef");
+                }
+                $this->declaredTools[] = $t;
+            }
+        }
+        $owc = (isset($opts['onToolWithContext']) && is_callable($opts['onToolWithContext'])) ? $opts['onToolWithContext'] : null;
+        $ot = (isset($opts['onTool']) && is_callable($opts['onTool'])) ? $opts['onTool'] : null;
+        // with-context wins when both are set — mirrors the Rust SDK.
+        $this->onToolWithContext = $owc;
+        $this->onTool = $owc !== null ? null : $ot;
+        if ($this->declaredTools !== []) {
+            $allowed = self::manifestExtendsTools($this->manifest);
+            $names = array_map(static fn (ToolDef $t): string => $t->name, $this->declaredTools);
+            if ($allowed === null) {
+                throw new ManifestError(
+                    "'tools' option used but the manifest has no [plugin.extends].tools list; declared: " . implode(', ', $names),
+                );
+            }
+            $offenders = array_values(array_filter($names, static fn (string $n): bool => !in_array($n, $allowed, true)));
+            if ($offenders !== []) {
+                throw new ManifestError(
+                    'declared tool(s) not in [plugin.extends].tools [' . implode(', ', $allowed) . ']: ' . implode(', ', $offenders),
+                );
+            }
+        }
 
         if ($this->enableStdoutGuard) {
             StdoutGuard::install();
@@ -209,6 +245,8 @@ final class PluginAdapter
             $this->replyInitialize($id);
         } elseif ($method === 'broker.event') {
             $this->dispatchEvent($msg['params'] ?? null);
+        } elseif ($method === 'tool.invoke') {
+            $this->handleToolInvoke($id, $msg['params'] ?? null);
         } elseif ($method === 'llm.complete.delta') {
             $this->routeDelta($msg['params'] ?? null);
         } elseif ($method === 'shutdown') {
@@ -236,10 +274,118 @@ final class PluginAdapter
         if ($id === null) {
             return;
         }
-        $this->writeFrame(Wire::buildResponse($id, [
+        $result = [
             'manifest' => $this->manifest,
             'server_version' => $this->serverVersion,
-        ]));
+        ];
+        if ($this->declaredTools !== []) {
+            $result['tools'] = array_map(static fn (ToolDef $t): array => $t->toJson(), $this->declaredTools);
+        }
+        $this->writeFrame(Wire::buildResponse($id, $result));
+    }
+
+    /**
+     * Return the manifest's `[plugin.extends].tools` list, or `null`
+     * when the section / field is absent.
+     *
+     * @param array<string, mixed> $manifest
+     * @return list<string>|null
+     * @throws ManifestError when present but not a list of strings
+     */
+    private static function manifestExtendsTools(array $manifest): ?array
+    {
+        $plugin = $manifest['plugin'] ?? null;
+        $extends = is_array($plugin) ? ($plugin['extends'] ?? null) : null;
+        if (!is_array($extends) || !array_key_exists('tools', $extends)) {
+            return null;
+        }
+        $tools = $extends['tools'];
+        if (!is_array($tools)) {
+            throw new ManifestError('[plugin.extends].tools must be a list of strings');
+        }
+        foreach ($tools as $t) {
+            if (!is_string($t)) {
+                throw new ManifestError('[plugin.extends].tools must be a list of strings');
+            }
+        }
+        return array_values($tools);
+    }
+
+    /**
+     * Handle a `tool.invoke` host→child request (contract §5.t). No
+     * handler registered → `-32601` (mirrors the Rust SDK: no-handler
+     * wins over param shape). The handler runs in a Fiber so a tool
+     * body can call `$broker->memoryRecall(...)` / `llmComplete(...)`
+     * mid-invocation; the Fiber is tracked in the scheduler's drain
+     * set so `shutdown` waits for an in-flight tool.
+     */
+    private function handleToolInvoke(int|string|null $id, mixed $params): void
+    {
+        if ($id === null) {
+            fwrite(STDERR, "plugin: tool.invoke frame without an id, dropped\n");
+            return;
+        }
+        if ($this->onTool === null && $this->onToolWithContext === null) {
+            $this->writeFrame(Wire::buildErrorResponse($id, -32601, 'method not found: tool.invoke'));
+            return;
+        }
+        if (!is_array($params)) {
+            $this->writeFrame(Wire::buildErrorResponse($id, -32602, 'tool.invoke params must be an object'));
+            return;
+        }
+        $toolName = $params['tool_name'] ?? null;
+        if (!is_string($toolName) || $toolName === '') {
+            $this->writeFrame(Wire::buildErrorResponse($id, -32602, 'tool.invoke params missing string `tool_name`'));
+            return;
+        }
+        $pluginId = $params['plugin_id'] ?? null;
+        $agentId = $params['agent_id'] ?? null;
+        $invocation = new ToolInvocation(
+            is_string($pluginId) ? $pluginId : (string) ($this->manifest['plugin']['id'] ?? ''),
+            $toolName,
+            $params['args'] ?? null,
+            is_string($agentId) ? $agentId : null,
+        );
+        $this->scheduler->spawn(function () use ($invocation, $id): void {
+            try {
+                if ($this->onToolWithContext !== null) {
+                    $ctx = new ToolContext($this->broker, (string) ($this->manifest['plugin']['id'] ?? ''));
+                    $result = ($this->onToolWithContext)($invocation, $ctx);
+                } else {
+                    // onTool is non-null — checked in handleToolInvoke.
+                    $result = ($this->onTool)($invocation);
+                }
+            } catch (ToolError $e) {
+                $this->writeToolError($id, $e);
+                return;
+            } catch (\Throwable $e) {
+                $this->writeToolError($id, new ToolExecutionFailed($e->getMessage()));
+                return;
+            }
+            $encoded = json_encode(
+                ['jsonrpc' => Wire::JSONRPC_VERSION, 'id' => $id, 'result' => $result],
+                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+            );
+            if ($encoded === false) {
+                $this->writeToolError(
+                    $id,
+                    new ToolExecutionFailed('tool result not JSON-serializable: ' . json_last_error_msg()),
+                );
+                return;
+            }
+            fwrite(STDOUT, $encoded . "\n");
+            fflush(STDOUT);
+        });
+    }
+
+    private function writeToolError(int|string|null $id, ToolError $err): void
+    {
+        $error = ['code' => $err->getCode(), 'message' => $err->getMessage()];
+        $data = $err->errorData();
+        if ($data !== null) {
+            $error['data'] = $data;
+        }
+        $this->writeFrame(['jsonrpc' => Wire::JSONRPC_VERSION, 'id' => $id, 'error' => $error]);
     }
 
     private function replyShutdown(int|string|null $id): void

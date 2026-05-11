@@ -37,11 +37,23 @@ import { parseLlmCompleteResult, type Pending } from "./host.js";
 import { parseManifest, type ParsedManifest } from "./manifest.js";
 import { installStdoutGuard, isStdoutGuardInstalled } from "./stdout-guard.js";
 import {
+  ToolError,
+  ToolExecutionFailedError,
+  toolDefToJson,
+  type ToolContext,
+  type ToolDef,
+  type ToolHandler,
+  type ToolHandlerWithContext,
+  type ToolInvocation,
+} from "./tools.js";
+import {
   buildErrorResponse,
   buildResponse,
   JSONRPC_VERSION,
   MAX_FRAME_BYTES,
   serializeFrame,
+  type JsonRpcErrorResponse,
+  type JsonRpcId,
 } from "./wire.js";
 
 export type EventHandler = (
@@ -51,6 +63,22 @@ export type EventHandler = (
 ) => Promise<void>;
 
 export type ShutdownHandler = () => Promise<void>;
+
+/** Return the manifest's `[plugin.extends].tools` list, or `undefined`
+ * when the section / field is absent. Throws `ManifestError` when
+ * present but not a list of strings. */
+function manifestExtendsTools(raw: Record<string, unknown>): string[] | undefined {
+  const plugin = raw["plugin"];
+  if (typeof plugin !== "object" || plugin === null) return undefined;
+  const extends_ = (plugin as Record<string, unknown>)["extends"];
+  if (typeof extends_ !== "object" || extends_ === null) return undefined;
+  if (!("tools" in extends_)) return undefined;
+  const tools = (extends_ as Record<string, unknown>)["tools"];
+  if (!Array.isArray(tools) || !tools.every((t) => typeof t === "string")) {
+    throw new ManifestError("[plugin.extends].tools must be a list of strings", "plugin.extends.tools");
+  }
+  return tools as string[];
+}
 
 export interface PluginAdapterOptions {
   /** Body of nexo-plugin.toml. Parsed once at construction. */
@@ -63,6 +91,19 @@ export interface PluginAdapterOptions {
   onEvent?: EventHandler;
   /** Awaited before `{ok: true}` reply to shutdown. */
   onShutdown?: ShutdownHandler;
+  /** Tool catalog advertised in the `initialize` reply (contract
+   * §4.1.1). Every `name` must appear in the manifest's
+   * `[plugin.extends].tools` — a name that doesn't is a hard error at
+   * `run()` (mirrors the host's drift check). */
+  tools?: ToolDef[];
+  /** `tool.invoke` dispatch handler — `fn(inv)`, sync or async.
+   * Mutually exclusive with `onToolWithContext`; if both are set, the
+   * with-context one wins. */
+  onTool?: ToolHandler;
+  /** `tool.invoke` dispatch handler — `fn(inv, ctx)`, sync or async,
+   * where `ctx.broker` lets the tool body call `memoryRecall` /
+   * `llmComplete` mid-invocation. Wins over `onTool` when both set. */
+  onToolWithContext?: ToolHandlerWithContext;
   /** Default true — patches `process.stdout.write` to divert non-JSON
    * lines to stderr. Critical for plugin authors who accidentally
    * `console.log`. Set false only if you have another guard layer. */
@@ -93,6 +134,9 @@ export class PluginAdapter {
   private readonly handleProcessSignals: boolean;
   private readonly inflight = new Set<Promise<void>>();
   private readonly broker: BrokerSender;
+  private readonly declaredTools: ToolDef[];
+  private readonly onTool?: ToolHandler;
+  private readonly onToolWithContext?: ToolHandlerWithContext;
   /** Outstanding child→host requests, keyed by SDK-assigned id; shared
    * with the broker handle so the dispatch loop can route responses +
    * `llm.complete.delta` chunks back to awaiting callers. */
@@ -111,6 +155,29 @@ export class PluginAdapter {
     this.onShutdown = opts.onShutdown;
     this.maxFrameBytes = opts.maxFrameBytes ?? MAX_FRAME_BYTES;
     this.handleProcessSignals = opts.handleProcessSignals ?? true;
+
+    // ── tool dispatch (contract §4.1.1 + §5.t) ──────────────────────
+    this.declaredTools = [...(opts.tools ?? [])];
+    // with-context wins when both are set — mirrors the Rust SDK.
+    this.onToolWithContext = opts.onToolWithContext;
+    this.onTool = opts.onToolWithContext !== undefined ? undefined : opts.onTool;
+    if (this.declaredTools.length > 0) {
+      const allowed = manifestExtendsTools(this.parsed.raw);
+      if (allowed === undefined) {
+        throw new ManifestError(
+          "tools= used but the manifest has no [plugin.extends].tools list; declared: " +
+            this.declaredTools.map((t) => t.name).join(", "),
+          "plugin.extends.tools",
+        );
+      }
+      const offenders = this.declaredTools.filter((t) => !allowed.includes(t.name)).map((t) => t.name);
+      if (offenders.length > 0) {
+        throw new ManifestError(
+          `declared tool(s) not in [plugin.extends].tools [${allowed.join(", ")}]: ${offenders.join(", ")}`,
+          "plugin.extends.tools",
+        );
+      }
+    }
 
     if (opts.enableStdoutGuard !== false) {
       installStdoutGuard();
@@ -221,6 +288,8 @@ export class PluginAdapter {
       this.replyInitialize(id);
     } else if (method === "broker.event") {
       this.dispatchEvent(msg.params);
+    } else if (method === "tool.invoke") {
+      this.handleToolInvoke(id, msg.params);
     } else if (method === "llm.complete.delta") {
       this.routeDelta(msg.params);
     } else if (method === "shutdown") {
@@ -296,12 +365,103 @@ export class PluginAdapter {
     if (id === undefined) {
       return; // spec-violating notification; nothing to reply to.
     }
-    this.writeFrame(
-      buildResponse(id as never, {
-        manifest: this.parsed.raw,
-        server_version: this.serverVersion,
-      }),
-    );
+    const result: Record<string, unknown> = {
+      manifest: this.parsed.raw,
+      server_version: this.serverVersion,
+    };
+    if (this.declaredTools.length > 0) {
+      result.tools = this.declaredTools.map(toolDefToJson);
+    }
+    this.writeFrame(buildResponse(id as never, result));
+  }
+
+  // ── tool.invoke dispatch (contract §5.t) ────────────────────────
+
+  private handleToolInvoke(id: unknown, params: unknown): void {
+    if (id === undefined || id === null) {
+      process.stderr.write("plugin: tool.invoke frame without an id, dropped\n");
+      return;
+    }
+    // No-handler wins over param shape — mirrors the Rust SDK so the
+    // host's RemoteToolHandler surfaces a clear "not implemented".
+    if (this.onTool === undefined && this.onToolWithContext === undefined) {
+      this.writeFrame(buildErrorResponse(id as never, -32601, "method not found: tool.invoke"));
+      return;
+    }
+    if (typeof params !== "object" || params === null) {
+      this.writeFrame(buildErrorResponse(id as never, -32602, "tool.invoke params must be an object"));
+      return;
+    }
+    const p = params as { plugin_id?: unknown; tool_name?: unknown; args?: unknown; agent_id?: unknown };
+    if (typeof p.tool_name !== "string" || p.tool_name.length === 0) {
+      this.writeFrame(buildErrorResponse(id as never, -32602, "tool.invoke params missing string `tool_name`"));
+      return;
+    }
+    const inv: ToolInvocation = {
+      pluginId: typeof p.plugin_id === "string" ? p.plugin_id : this.parsed.plugin.id,
+      toolName: p.tool_name,
+      args: p.args ?? null,
+      agentId: typeof p.agent_id === "string" ? p.agent_id : undefined,
+    };
+    const task: Promise<void> = Promise.resolve()
+      .then(() => this.invokeToolHandler(inv))
+      .then((result) => {
+        this.sendToolResult(id, result);
+      })
+      .catch((e) => {
+        if (e instanceof ToolError) {
+          this.sendToolError(id, e);
+        } else {
+          this.sendToolError(
+            id,
+            new ToolExecutionFailedError(e instanceof Error ? e.message : String(e)),
+          );
+        }
+      });
+    this.inflight.add(task);
+    task.finally(() => {
+      this.inflight.delete(task);
+    });
+  }
+
+  private invokeToolHandler(inv: ToolInvocation): unknown | Promise<unknown> {
+    if (this.onToolWithContext !== undefined) {
+      const ctx: ToolContext = { broker: this.broker, pluginId: this.parsed.plugin.id };
+      return this.onToolWithContext(inv, ctx);
+    }
+    // onTool is defined — checked in handleToolInvoke before this runs.
+    return (this.onTool as ToolHandler)(inv);
+  }
+
+  private sendToolResult(id: unknown, result: unknown): void {
+    let line: string;
+    try {
+      line = serializeFrame(buildResponse(id as never, result));
+    } catch (e) {
+      this.sendToolError(
+        id,
+        new ToolExecutionFailedError(
+          `tool result not JSON-serializable: ${e instanceof Error ? e.message : String(e)}`,
+        ),
+      );
+      return;
+    }
+    process.stdout.write(line);
+  }
+
+  private sendToolError(id: unknown, err: ToolError): void {
+    const data = err.errorData();
+    const errorObj: { code: number; message: string; data?: unknown } = {
+      code: err.code,
+      message: err.message,
+    };
+    if (data !== undefined) errorObj.data = data;
+    const frame: JsonRpcErrorResponse = {
+      jsonrpc: JSONRPC_VERSION,
+      id: id as JsonRpcId,
+      error: errorObj,
+    };
+    this.writeFrame(frame);
   }
 
   private async replyShutdown(id: unknown): Promise<void> {
