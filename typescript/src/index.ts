@@ -10,6 +10,23 @@ export type {
   ShutdownHandler,
   PluginAdapterOptions,
 } from "./adapter.js";
+export {
+  ToolError,
+  ToolNotFoundError,
+  ToolArgumentInvalidError,
+  ToolExecutionFailedError,
+  ToolUnavailableError,
+  ToolDeniedError,
+  toolDefToJson,
+  textResult,
+} from "./tools.js";
+export type {
+  ToolDef,
+  ToolInvocation,
+  ToolContext,
+  ToolHandler,
+  ToolHandlerWithContext,
+} from "./tools.js";
 export { BrokerSender } from "./broker.js";
 export type { LineWriter, MemoryRecallOptions } from "./broker.js";
 export { Event } from "./events.js";
