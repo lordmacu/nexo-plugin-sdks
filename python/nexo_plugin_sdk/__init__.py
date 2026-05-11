@@ -6,7 +6,13 @@ importable module is ``nexo_plugin_sdk``. Public API mirrors the Rust
 child SDK (``crates/microapp-sdk``, feature ``plugin``).
 """
 
-from .adapter import EventHandler, PluginAdapter, ShutdownHandler
+from .adapter import (
+    EventHandler,
+    PluginAdapter,
+    ShutdownHandler,
+    ToolHandler,
+    ToolHandlerWithContext,
+)
 from .broker import BrokerSender
 from .errors import (
     ManifestError,
@@ -28,6 +34,18 @@ from .host import (
     TokenCount,
 )
 from .manifest import read_manifest
+from .tools import (
+    ToolArgumentInvalid,
+    ToolContext,
+    ToolDef,
+    ToolDenied,
+    ToolExecutionFailed,
+    ToolInvocation,
+    ToolInvocationError,
+    ToolNotFound,
+    ToolUnavailable,
+    text_result,
+)
 from .stdout_guard import (
     STDOUT_GUARD_MARKER,
     install_stdout_guard,
@@ -50,6 +68,19 @@ __all__ = [
     "Event",
     "EventHandler",
     "ShutdownHandler",
+    "ToolHandler",
+    "ToolHandlerWithContext",
+    # Tool dispatch surface (contract §4.1.1 + §5.t)
+    "ToolDef",
+    "ToolInvocation",
+    "ToolContext",
+    "ToolInvocationError",
+    "ToolNotFound",
+    "ToolArgumentInvalid",
+    "ToolExecutionFailed",
+    "ToolUnavailable",
+    "ToolDenied",
+    "text_result",
     # Host-call surface
     "MemoryEntry",
     "Message",

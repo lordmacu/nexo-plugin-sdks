@@ -23,6 +23,7 @@ Wire format: ``nexo-plugin-contract.md``.
 """
 
 import asyncio
+import inspect
 import itertools
 import json
 import signal
@@ -31,13 +32,33 @@ from typing import Any, Awaitable, Callable, Iterator, Union
 
 from . import stdout_guard, wire
 from .broker import BrokerSender
-from .errors import PluginError, RpcServerError, RpcTransportError, WireError
+from .errors import ManifestError, PluginError, RpcServerError, RpcTransportError, WireError
 from .events import Event
 from .host import LlmCompleteResult, _STREAM_END, _StreamPending
 from .manifest import read_manifest
+from .tools import ToolContext, ToolDef, ToolExecutionFailed, ToolInvocation, ToolInvocationError
 
 EventHandler = Callable[[str, Event, BrokerSender], Awaitable[None]]
 ShutdownHandler = Callable[[], Awaitable[None]]
+#: A ``tool.invoke`` handler — sync or async. ``on_tool`` style takes
+#: just the invocation; ``on_tool_with_context`` style also takes a
+#: :class:`~nexo_plugin_sdk.tools.ToolContext`.
+ToolHandler = Callable[[ToolInvocation], Any]
+ToolHandlerWithContext = Callable[[ToolInvocation, ToolContext], Any]
+
+
+def _manifest_extends_tools(manifest: dict[str, Any]) -> list[str] | None:
+    """Return the manifest's ``[plugin.extends].tools`` list, or ``None``
+    when the section / field is absent. Raises :class:`ManifestError`
+    when present but not a list of strings."""
+    plugin = manifest.get("plugin")
+    extends = plugin.get("extends") if isinstance(plugin, dict) else None
+    if not isinstance(extends, dict) or "tools" not in extends:
+        return None
+    tools = extends["tools"]
+    if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
+        raise ManifestError("[plugin.extends].tools must be a list of strings")
+    return tools
 
 _Pending = Union["asyncio.Future[Any]", _StreamPending]
 
@@ -77,6 +98,9 @@ class PluginAdapter:
         server_version: str = "0.1.0",
         on_event: EventHandler | None = None,
         on_shutdown: ShutdownHandler | None = None,
+        tools: list[ToolDef] | None = None,
+        on_tool: ToolHandler | None = None,
+        on_tool_with_context: ToolHandlerWithContext | None = None,
         enable_stdout_guard: bool = True,
         max_frame_bytes: int = wire.MAX_FRAME_BYTES,
         handle_process_signals: bool = True,
@@ -87,6 +111,30 @@ class PluginAdapter:
         self._server_version = server_version
         self._on_event = on_event
         self._on_shutdown = on_shutdown
+        # ── tool dispatch (contract §4.1.1 + §5.t) ────────────────
+        self._declared_tools: list[ToolDef] = list(tools or [])
+        # with-context wins when both are set — mirrors the Rust SDK
+        # (operator likely migrated incrementally + forgot to drop the
+        # plain handler).
+        self._on_tool_with_context = on_tool_with_context
+        self._on_tool = None if on_tool_with_context is not None else on_tool
+        # Fail fast on manifest / catalog drift exactly where the host
+        # would: a declared tool whose name isn't in [plugin.extends].tools
+        # gets the plugin killed at load. Surface it here instead.
+        if self._declared_tools:
+            allowed = _manifest_extends_tools(self._manifest)
+            if allowed is None:
+                raise ManifestError(
+                    "declare_tools/tools= used but the manifest has no "
+                    "[plugin.extends].tools list; declared: "
+                    + ", ".join(t.name for t in self._declared_tools)
+                )
+            offenders = [t.name for t in self._declared_tools if t.name not in allowed]
+            if offenders:
+                raise ManifestError(
+                    "declared tool(s) not in [plugin.extends].tools "
+                    f"{allowed!r}: {', '.join(offenders)}"
+                )
         self._enable_stdout_guard = enable_stdout_guard
         self._max_frame_bytes = max_frame_bytes
         self._handle_process_signals = handle_process_signals
@@ -113,6 +161,43 @@ class PluginAdapter:
     @property
     def manifest(self) -> dict[str, Any]:
         return self._manifest
+
+    def declare_tools(self, tools: list[ToolDef]) -> "PluginAdapter":
+        """Replace the advertised tool catalog (contract §4.1.1).
+        Chainable alternative to the ``tools=`` constructor kwarg.
+        Re-runs the manifest cross-check, so a name not in
+        ``[plugin.extends].tools`` raises :class:`ManifestError` here."""
+        self._declared_tools = list(tools)
+        if self._declared_tools:
+            allowed = _manifest_extends_tools(self._manifest)
+            if allowed is None:
+                raise ManifestError(
+                    "declare_tools used but the manifest has no "
+                    "[plugin.extends].tools list"
+                )
+            offenders = [t.name for t in self._declared_tools if t.name not in allowed]
+            if offenders:
+                raise ManifestError(
+                    f"declared tool(s) not in [plugin.extends].tools: {', '.join(offenders)}"
+                )
+        return self
+
+    def on_tool(self, handler: ToolHandler) -> "PluginAdapter":
+        """Register the ``tool.invoke`` dispatch handler — ``fn(inv)``,
+        sync or async. Mutually exclusive with :meth:`on_tool_with_context`
+        (if both are set, the with-context one wins). Chainable."""
+        if self._on_tool_with_context is None:
+            self._on_tool = handler
+        return self
+
+    def on_tool_with_context(self, handler: ToolHandlerWithContext) -> "PluginAdapter":
+        """Register the ``tool.invoke`` dispatch handler — ``fn(inv, ctx)``,
+        sync or async, where ``ctx.broker`` lets the tool body call
+        ``memory_recall`` / ``llm_complete`` mid-invocation. Wins over
+        :meth:`on_tool` when both are set. Chainable."""
+        self._on_tool_with_context = handler
+        self._on_tool = None
+        return self
 
     def _install_signal_handlers(
         self, loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event
@@ -233,6 +318,8 @@ class PluginAdapter:
             task = asyncio.create_task(self._dispatch_event(params))
             self._inflight.add(task)
             task.add_done_callback(self._inflight.discard)
+        elif method == "tool.invoke":
+            await self._handle_tool_invoke(req_id, msg.get("params"))
         elif method == "llm.complete.delta":
             self._route_delta(msg.get("params") or {})
         elif method == "shutdown":
@@ -311,9 +398,83 @@ class PluginAdapter:
         await asyncio.gather(*list(self._inflight), return_exceptions=True)
 
     async def _reply_initialize(self, req_id: Any) -> None:
-        await self._send_response(
-            req_id, {"manifest": self._manifest, "server_version": self._server_version}
+        result: dict[str, Any] = {
+            "manifest": self._manifest,
+            "server_version": self._server_version,
+        }
+        if self._declared_tools:
+            result["tools"] = [t.to_json() for t in self._declared_tools]
+        await self._send_response(req_id, result)
+
+    # ── tool.invoke dispatch (contract §5.t) ──────────────────────
+
+    async def _handle_tool_invoke(self, req_id: Any, params: Any) -> None:
+        if req_id is None:
+            # tool.invoke is a request; a frame without an id is malformed
+            # and there's nothing to reply to. Log + drop.
+            sys.stderr.write("plugin: tool.invoke frame without an id, dropped\n")
+            sys.stderr.flush()
+            return
+        # No-handler wins over param shape — mirrors the Rust SDK so the
+        # host's RemoteToolHandler surfaces a clear "not implemented".
+        if self._on_tool is None and self._on_tool_with_context is None:
+            await self._send_error(req_id, -32601, "method not found: tool.invoke")
+            return
+        if not isinstance(params, dict):
+            await self._send_error(req_id, -32602, "tool.invoke params must be an object")
+            return
+        tool_name = params.get("tool_name")
+        if not isinstance(tool_name, str) or not tool_name:
+            await self._send_error(req_id, -32602, "tool.invoke params missing string `tool_name`")
+            return
+        plugin_id = params.get("plugin_id")
+        agent_id = params.get("agent_id")
+        invocation = ToolInvocation(
+            plugin_id=plugin_id if isinstance(plugin_id, str) else str(self._manifest["plugin"]["id"]),
+            tool_name=tool_name,
+            args=params.get("args"),
+            agent_id=agent_id if isinstance(agent_id, str) else None,
         )
+        task = asyncio.create_task(self._dispatch_tool(req_id, invocation))
+        self._inflight.add(task)
+        task.add_done_callback(self._inflight.discard)
+
+    async def _dispatch_tool(self, req_id: Any, invocation: ToolInvocation) -> None:
+        try:
+            if self._on_tool_with_context is not None:
+                ctx = ToolContext(
+                    broker=self._broker, plugin_id=str(self._manifest["plugin"]["id"])
+                )
+                result = self._on_tool_with_context(invocation, ctx)
+            else:
+                assert self._on_tool is not None  # checked in _handle_tool_invoke
+                result = self._on_tool(invocation)
+            if inspect.isawaitable(result):
+                result = await result
+        except ToolInvocationError as e:
+            await self._send_tool_error(req_id, e)
+            return
+        except Exception as e:  # noqa: BLE001
+            await self._send_tool_error(req_id, ToolExecutionFailed(repr(e)))
+            return
+        try:
+            await self._send_response(req_id, result)
+        except (TypeError, ValueError) as e:
+            await self._send_tool_error(
+                req_id, ToolExecutionFailed(f"tool result not JSON-serializable: {e}")
+            )
+
+    async def _send_tool_error(self, req_id: Any, err: ToolInvocationError) -> None:
+        error_obj: dict[str, Any] = {"code": err.code, "message": str(err)}
+        data = err.error_data()
+        if data is not None:
+            error_obj["data"] = data
+        line = wire.serialize_frame(
+            {"jsonrpc": wire.JSONRPC_VERSION, "id": req_id, "error": error_obj}
+        )
+        async with self._write_lock:
+            self._stdout.write(line)
+            self._stdout.flush()
 
     async def _reply_shutdown(self, req_id: Any) -> None:
         if self._on_shutdown is not None:
